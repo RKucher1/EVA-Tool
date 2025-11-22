@@ -535,18 +535,30 @@ def main():
         banner(Fore.CYAN, f"⚡ Parallel mode: {args.parallel} concurrent workers")
         warn(f"Output will be buffered and displayed in port order after scanning completes.")
         warn(f"This mode is quieter on IDS/IPS but you won't see live output.")
+        print()  # spacing
 
         results = {}  # port -> output mapping
+        completed_ports = []
 
         with ThreadPoolExecutor(max_workers=args.parallel) as executor:
             # Submit all port scans
             futures = {executor.submit(scan_port_buffered, sc, p): p for p in port_list}
 
-            # Collect results as they complete
-            for future in tqdm(as_completed(futures), total=len(port_list),
-                             desc="Scanning", unit="port", ncols=80, colour="cyan"):
-                port, output = future.result()
-                results[port] = output
+            # Collect results as they complete with live progress updates
+            with tqdm(total=len(port_list), desc="Progress", unit="port",
+                     ncols=100, colour="cyan", bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
+                for future in as_completed(futures):
+                    port, output = future.result()
+                    results[port] = output
+                    completed_ports.append(port)
+
+                    # Update progress bar with last completed port
+                    pbar.set_postfix_str(f"✓ Port {port}", refresh=True)
+                    pbar.update(1)
+
+        # Show completion summary
+        print()
+        ok(f"All {len(port_list)} ports scanned. Completed: {sorted(completed_ports)}")
 
         # Display all results in port order
         banner(Fore.CYAN, "Displaying results in port order...")
