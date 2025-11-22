@@ -38,8 +38,10 @@ import subprocess
 import sys
 import time
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 from http import HTTPStatus
+from io import StringIO
 
 # ───────── 3rd-party
 import requests
@@ -99,7 +101,13 @@ def strip_proto(u: str) -> str:
     return re.sub(r"^(https?://)?(www\.)?", "", u.lower())
 
 def is_ip(a: str) -> bool:
-    return re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", a) is not None
+    """Validate IPv4 address format (0-255 per octet)."""
+    if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", a):
+        return False
+    try:
+        return all(0 <= int(octet) <= 255 for octet in a.split('.'))
+    except ValueError:
+        return False
 
 def resolve(h: str) -> str:
     return socket.gethostbyname(h)
@@ -431,15 +439,54 @@ def scan_port(sc: Scanner, port: int):
 
 # ───────── CLI / main
 def expand(spec: str):
+    """Expand port specification (e.g., '80,443,8000-8888') into sorted list.
+
+    Validates that all ports are in valid range (1-65535).
+    Raises ValueError if any port is out of bounds.
+    """
     out = set()
     for seg in spec.split(","):
         seg = seg.strip()
         if "-" in seg:
             lo, hi = map(int, seg.split("-", 1))
+            if not (1 <= lo <= 65535 and 1 <= hi <= 65535):
+                raise ValueError(f"Port range {lo}-{hi} out of bounds (valid: 1-65535)")
+            if lo > hi:
+                raise ValueError(f"Invalid port range {lo}-{hi}: start port must be <= end port")
             out.update(range(lo, hi + 1))
         else:
-            out.add(int(seg))
+            port = int(seg)
+            if not (1 <= port <= 65535):
+                raise ValueError(f"Port {port} out of bounds (valid: 1-65535)")
+            out.add(port)
     return sorted(out)
+
+def scan_port_buffered(sc: Scanner, port: int) -> tuple[int, str]:
+    """
+    Scan a single port and capture all output to a buffer.
+    Returns: (port_number, buffered_output_string)
+
+    Used for parallel scanning to keep output organized.
+    """
+    import sys
+    from io import StringIO
+
+    # Redirect stdout to buffer
+    old_stdout = sys.stdout
+    buffer = StringIO()
+    sys.stdout = buffer
+
+    try:
+        scan_port(sc, port)
+    except Exception as e:
+        banner(Fore.RED, f"Port {port} — unexpected error")
+        err(f"Something went wrong while scanning port {port}: {e}")
+        print("         " + "Tip: Re-run with --debug for more details, or try scanning this port manually.")
+    finally:
+        # Restore stdout
+        sys.stdout = old_stdout
+
+    return (port, buffer.getvalue())
 
 def cli():
     ap = argparse.ArgumentParser(description="EVA — Banner-style live-output scanner")
@@ -448,7 +495,9 @@ def cli():
     ap.add_argument("--no-ssl", action="store_true", help="Skip all TLS/testssl scans")
     ap.add_argument("--no-web", action="store_true", help="Skip curl/HTTP and Firefox actions")
     ap.add_argument("--no-firefox", action="store_true", help="Do not launch Firefox even if reachable")
+    ap.add_argument("--parallel", type=int, metavar="N", help="Scan N ports in parallel (buffered output, quieter on IDS)")
     ap.add_argument("--debug", action="store_true", help="Verbose internal logging to stdout")
+    ap.add_argument("--version", action="version", version="EVA Scanner v8.3")
     return ap.parse_args()
 
 def main():
@@ -467,20 +516,53 @@ def main():
 
     banner(Fore.CYAN, f"Scanning target: {tgt}   Ports: {args.ports}")
 
-    port_list = expand(args.ports)
+    try:
+        port_list = expand(args.ports)
+    except ValueError as e:
+        banner(Fore.RED, "Port specification error")
+        err(str(e))
+        print("         " + "Valid formats: 80, 80,443, 1-1024, 22,80,443,8000-8888")
+        sys.exit(1)
+
     check_dependencies(port_list, args)
 
     sc = Scanner(tgt, args)
     signal.signal(signal.SIGINT, lambda *_: sys.exit("\nInterrupted by user."))
 
-    for p in tqdm(port_list, desc="Ports", unit="port", ncols=80, colour="cyan"):
-        try:
-            scan_port(sc, p)
-        except Exception as e:
-            banner(Fore.RED, f"Port {p} — unexpected error")
-            err(f"Something went wrong while scanning port {p}: {e}")
-            print("         " + "Tip: Re-run with --debug for more details, or try scanning this port manually.")
-        time.sleep(PACE)
+    # Choose scanning mode
+    if args.parallel and args.parallel > 1:
+        # ─── Parallel mode: scan multiple ports concurrently, display results sequentially ───
+        banner(Fore.CYAN, f"⚡ Parallel mode: {args.parallel} concurrent workers")
+        warn(f"Output will be buffered and displayed in port order after scanning completes.")
+        warn(f"This mode is quieter on IDS/IPS but you won't see live output.")
+
+        results = {}  # port -> output mapping
+
+        with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+            # Submit all port scans
+            futures = {executor.submit(scan_port_buffered, sc, p): p for p in port_list}
+
+            # Collect results as they complete
+            for future in tqdm(as_completed(futures), total=len(port_list),
+                             desc="Scanning", unit="port", ncols=80, colour="cyan"):
+                port, output = future.result()
+                results[port] = output
+
+        # Display all results in port order
+        banner(Fore.CYAN, "Displaying results in port order...")
+        for port in sorted(results.keys()):
+            print(results[port], end='')
+
+    else:
+        # ─── Sequential mode: traditional live output ───
+        for p in tqdm(port_list, desc="Ports", unit="port", ncols=80, colour="cyan"):
+            try:
+                scan_port(sc, p)
+            except Exception as e:
+                banner(Fore.RED, f"Port {p} — unexpected error")
+                err(f"Something went wrong while scanning port {p}: {e}")
+                print("         " + "Tip: Re-run with --debug for more details, or try scanning this port manually.")
+            time.sleep(PACE)
 
     banner(Fore.GREEN, "SCAN COMPLETE")
 
