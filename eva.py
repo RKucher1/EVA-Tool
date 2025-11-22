@@ -489,14 +489,14 @@ def scan_port_buffered(sc: Scanner, port: int) -> tuple[int, str]:
     return (port, buffer.getvalue())
 
 def cli():
-    ap = argparse.ArgumentParser(description="EVA — Banner-style live-output scanner")
-    ap.add_argument("--target", required=True, help="IP or hostname")
+    ap = argparse.ArgumentParser(description="EVA — External Vulnerability Assessment Tool v8.3")
+    ap.add_argument("--target", required=True, help="Target IP or hostname to assess")
     ap.add_argument("--ports", required=True, help="Comma list and/or ranges (e.g., 80,443,1-1024)")
-    ap.add_argument("--no-ssl", action="store_true", help="Skip all TLS/testssl scans")
-    ap.add_argument("--no-web", action="store_true", help="Skip curl/HTTP and Firefox actions")
-    ap.add_argument("--no-firefox", action="store_true", help="Do not launch Firefox even if reachable")
-    ap.add_argument("--parallel", type=int, metavar="N", help="Scan N ports in parallel (buffered output, quieter on IDS)")
-    ap.add_argument("--debug", action="store_true", help="Verbose internal logging to stdout")
+    ap.add_argument("--no-ssl", action="store_true", help="Skip all TLS/SSL vulnerability checks")
+    ap.add_argument("--no-web", action="store_true", help="Skip HTTP/HTTPS enumeration and browser actions")
+    ap.add_argument("--no-firefox", action="store_true", help="Do not launch Firefox for web service verification")
+    ap.add_argument("--parallel", type=int, metavar="N", help="Run N port assessments concurrently (stealth mode, buffered output)")
+    ap.add_argument("--debug", action="store_true", help="Enable verbose diagnostic output")
     ap.add_argument("--version", action="version", version="EVA Scanner v8.3")
     return ap.parse_args()
 
@@ -514,7 +514,7 @@ def main():
         print("         " + "Check DNS/host spelling or try using the raw IP address.")
         sys.exit(1)
 
-    banner(Fore.CYAN, f"Scanning target: {tgt}   Ports: {args.ports}")
+    banner(Fore.CYAN, f"EVA — Vulnerability Assessment Target: {tgt}   Ports: {args.ports}")
 
     try:
         port_list = expand(args.ports)
@@ -531,21 +531,21 @@ def main():
 
     # Choose scanning mode
     if args.parallel and args.parallel > 1:
-        # ─── Parallel mode: scan multiple ports concurrently, display results sequentially ───
-        banner(Fore.CYAN, f"⚡ Parallel mode: {args.parallel} concurrent workers")
-        warn(f"Output will be buffered and displayed in port order after scanning completes.")
-        warn(f"This mode is quieter on IDS/IPS but you won't see live output.")
+        # ─── Parallel mode: assess multiple ports concurrently, display results sequentially ───
+        banner(Fore.CYAN, f"⚡ Stealth Assessment Mode: {args.parallel} concurrent workers")
+        warn(f"Results will be buffered and displayed in sequential order after assessment completes.")
+        warn(f"Parallel mode reduces IDS/IPS detection signatures - live output disabled.")
         print()  # spacing
 
         results = {}  # port -> output mapping
         completed_ports = []
 
         with ThreadPoolExecutor(max_workers=args.parallel) as executor:
-            # Submit all port scans
+            # Submit all port assessments
             futures = {executor.submit(scan_port_buffered, sc, p): p for p in port_list}
 
             # Collect results as they complete with live progress updates
-            with tqdm(total=len(port_list), desc="Progress", unit="port",
+            with tqdm(total=len(port_list), desc="Assessing", unit="port",
                      ncols=100, colour="cyan", bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
                 for future in as_completed(futures):
                     port, output = future.result()
@@ -558,25 +558,25 @@ def main():
 
         # Show completion summary
         print()
-        ok(f"All {len(port_list)} ports scanned. Completed: {sorted(completed_ports)}")
+        ok(f"Assessment complete: {len(port_list)} ports analyzed. Results: {sorted(completed_ports)}")
 
         # Display all results in port order
-        banner(Fore.CYAN, "Displaying results in port order...")
+        banner(Fore.CYAN, "Vulnerability Assessment Results (Sequential Display)...")
         for port in sorted(results.keys()):
             print(results[port], end='')
 
     else:
         # ─── Sequential mode: traditional live output ───
-        for p in tqdm(port_list, desc="Ports", unit="port", ncols=80, colour="cyan"):
+        for p in tqdm(port_list, desc="Assessing", unit="port", ncols=80, colour="cyan"):
             try:
                 scan_port(sc, p)
             except Exception as e:
-                banner(Fore.RED, f"Port {p} — unexpected error")
-                err(f"Something went wrong while scanning port {p}: {e}")
-                print("         " + "Tip: Re-run with --debug for more details, or try scanning this port manually.")
+                banner(Fore.RED, f"Port {p} — Assessment Error")
+                err(f"Something went wrong while assessing port {p}: {e}")
+                print("         " + "Tip: Re-run with --debug for more details, or try assessing this port manually.")
             time.sleep(PACE)
 
-    banner(Fore.GREEN, "SCAN COMPLETE")
+    banner(Fore.GREEN, "✓ VULNERABILITY ASSESSMENT COMPLETE")
 
 if __name__ == "__main__":
     try:
