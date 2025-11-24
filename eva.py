@@ -167,6 +167,25 @@ def warn(msg: str):
 def err(msg: str):
     print("      " + Fore.RED + msg + Style.RESET_ALL)
 
+# ───────── ASCII art banner
+def print_banner():
+    """Display EVA ASCII art banner with cyberpunk styling."""
+    banner_art = f"""
+{Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║     {Fore.RED}███████╗{Fore.CYAN}╗   ╗{Fore.RED}███████╗        {Fore.YELLOW}External Vulnerability Assessment{Fore.CYAN}      ║
+║     {Fore.RED}██╔════╝{Fore.CYAN}╚╗ ╔╝{Fore.RED}██╔══██╗       {Fore.WHITE}Intelligent Network Security Scanner{Fore.CYAN}      ║
+║     {Fore.RED}█████╗  {Fore.CYAN} ╚╦╝ {Fore.RED}███████║                                              {Fore.CYAN}║
+║     {Fore.RED}██╔══╝  {Fore.CYAN} ╔╩╗ {Fore.RED}██╔══██║       {Fore.GREEN}» {Fore.WHITE}Version 8.3{Fore.CYAN}                              ║
+║     {Fore.RED}███████╗{Fore.CYAN}╔╝ ╚╗{Fore.RED}██║  ██║       {Fore.GREEN}» {Fore.WHITE}Author: Ryan Kucher{Fore.CYAN}                      ║
+║     {Fore.RED}╚══════╝{Fore.CYAN}╝   ╚{Fore.RED}╚═╝  ╚═╝       {Fore.GREEN}» {Fore.WHITE}Pentesting & Security Research{Fore.CYAN}           ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
+"""
+    print(banner_art)
+    print(f"{Fore.YELLOW}[!]{Style.RESET_ALL} {Fore.WHITE}Authorized Use Only{Style.RESET_ALL} - {Fore.CYAN}Live Vulnerability Assessment Initiated{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{'─' * 79}{Style.RESET_ALL}\n")
+
 # ───────── dependency preflight
 def tool_path(name: str) -> str | None:
     return shutil.which(name)
@@ -204,10 +223,6 @@ def check_dependencies(ports: list[int], args):
         warn("Optional tool 'ike-scan' not found. Install: sudo apt-get install ike-scan")
     if not args.no_firefox and not tool_path("firefox"):
         warn("Firefox not found; pages will not be auto-opened. Install: sudo apt-get install firefox-esr")
-    if TESTSSL_BIN is None:
-        warn("testssl not found; TLS deep-dive will be skipped gracefully.")
-    else:
-        ok(f"testssl available: {TESTSSL_BIN}")
 
 # ───────── command runners
 def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
@@ -535,6 +550,9 @@ def main():
     args = cli()
     setup_log(args.debug)
 
+    # Display ASCII art banner
+    print_banner()
+
     host = strip_proto(args.target)
     try:
         tgt = host if is_ip(host) else resolve(host)
@@ -544,13 +562,17 @@ def main():
         print("         " + "Check DNS/host spelling or try using the raw IP address.")
         sys.exit(1)
 
-    banner(Fore.CYAN, f"EVA — Vulnerability Assessment Target: {tgt}   Ports: {args.ports}")
+    # Display target information
+    print(f"{Fore.CYAN}╔══════════════════════════════════════════════════════════════════════════════╗{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║{Style.RESET_ALL} {Fore.GREEN}TARGET:{Style.RESET_ALL} {Fore.WHITE}{tgt:<67}{Fore.CYAN}║{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║{Style.RESET_ALL} {Fore.GREEN}PORTS: {Style.RESET_ALL} {Fore.WHITE}{args.ports:<67}{Fore.CYAN}║{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}╚══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}\n")
 
     try:
         port_list = expand(args.ports)
     except ValueError as e:
         banner(Fore.RED, "Port specification error")
-        err(str(e))
+        err(f"Could not resolve '{host}': {e}")
         print("         " + "Valid formats: 80, 80,443, 1-1024, 22,80,443,8000-8888")
         sys.exit(1)
 
@@ -562,9 +584,11 @@ def main():
     # Choose scanning mode
     if args.parallel and args.parallel > 1:
         # ─── Parallel mode: assess multiple ports concurrently, display results sequentially ───
-        banner(Fore.CYAN, f"⚡ Stealth Assessment Mode: {args.parallel} concurrent workers")
-        warn(f"Results will be buffered and displayed in sequential order after assessment completes.")
-        warn(f"Parallel mode reduces IDS/IPS detection signatures - live output disabled.")
+        print(f"{Fore.MAGENTA}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}┃{Style.RESET_ALL} {Fore.YELLOW}⚡ STEALTH ASSESSMENT MODE{Style.RESET_ALL} - {Fore.CYAN}{args.parallel} concurrent workers{Style.RESET_ALL}                        {Fore.MAGENTA}┃{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}┃{Style.RESET_ALL} {Fore.WHITE}Results buffered and displayed sequentially after completion{Style.RESET_ALL}             {Fore.MAGENTA}┃{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}┃{Style.RESET_ALL} {Fore.GREEN}Parallel mode reduces IDS/IPS detection signatures{Style.RESET_ALL}                     {Fore.MAGENTA}┃{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}")
         print()  # spacing
 
         # Install thread-safe stdout wrapper for parallel mode
@@ -595,15 +619,25 @@ def main():
 
         # Show completion summary
         print()
-        ok(f"Assessment complete: {len(port_list)} ports analyzed. Results: {sorted(completed_ports)}")
+        print(f"{Fore.GREEN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}┃{Style.RESET_ALL} {Fore.YELLOW}✓ ASSESSMENT COMPLETE{Style.RESET_ALL} - {Fore.WHITE}{len(port_list)} ports analyzed{Style.RESET_ALL}                               {Fore.GREEN}┃{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}┃{Style.RESET_ALL} {Fore.CYAN}Completed ports:{Style.RESET_ALL} {Fore.WHITE}{sorted(completed_ports)}{Style.RESET_ALL}", end="")
+        print(" " * (75 - len(str(sorted(completed_ports))) - len("Completed ports: ")) + f"{Fore.GREEN}┃{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}\n")
 
         # Display all results in port order
-        banner(Fore.CYAN, "Vulnerability Assessment Results (Sequential Display)...")
+        print(f"{Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}║{Style.RESET_ALL}             {Fore.YELLOW}VULNERABILITY ASSESSMENT RESULTS{Style.RESET_ALL} {Fore.WHITE}(Sequential Display){Style.RESET_ALL}             {Fore.CYAN}║{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}\n")
         for port in sorted(results.keys()):
             print(results[port], end='')
 
     else:
         # ─── Sequential mode: traditional live output ───
+        print(f"{Fore.CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.YELLOW}▶ SEQUENTIAL ASSESSMENT MODE{Style.RESET_ALL} - {Fore.WHITE}Live output enabled{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.GREEN}Real-time streaming results with immediate feedback{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}\n")
         for p in tqdm(port_list, desc="Assessing", unit="port", ncols=80, colour="cyan"):
             try:
                 scan_port(sc, p)
@@ -613,7 +647,16 @@ def main():
                 print("         " + "Tip: Re-run with --debug for more details, or try assessing this port manually.")
             time.sleep(PACE)
 
-    banner(Fore.GREEN, "✓ VULNERABILITY ASSESSMENT COMPLETE")
+    # Final completion banner
+    print()
+    print(f"{Fore.GREEN}╔═══════════════════════════════════════════════════════════════════════════════╗{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}                                                                               {Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}               {Fore.YELLOW}✓ VULNERABILITY ASSESSMENT COMPLETE{Style.RESET_ALL}                        {Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}                                                                               {Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}         {Fore.CYAN}Thank you for using EVA - External Vulnerability Assessment{Style.RESET_ALL}       {Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}                   {Fore.WHITE}Stay secure, stay vigilant{Style.RESET_ALL}                               {Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}                                                                               {Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}")
 
 if __name__ == "__main__":
     try:
