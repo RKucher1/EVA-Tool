@@ -36,6 +36,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -52,6 +53,36 @@ from tqdm import tqdm
 # ───────── init
 init(autoreset=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ───────── thread-safe stdout for parallel scanning
+_thread_local = threading.local()
+_original_stdout = sys.stdout
+
+
+class ThreadSafeStdout:
+    """
+    Stdout wrapper that routes writes to thread-local buffers when in parallel mode.
+    Each thread can set its own buffer via _thread_local.buffer, and all writes
+    will go there instead of the global stdout.
+    """
+    def write(self, text):
+        buffer = getattr(_thread_local, 'buffer', None)
+        if buffer is not None:
+            buffer.write(text)
+        else:
+            _original_stdout.write(text)
+
+    def flush(self):
+        buffer = getattr(_thread_local, 'buffer', None)
+        if buffer is not None:
+            buffer.flush()
+        else:
+            _original_stdout.flush()
+
+    def __getattr__(self, name):
+        # Forward all other attributes to original stdout
+        return getattr(_original_stdout, name)
+
 
 # ───────── constants / tuning
 CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts (NOT used for testssl)
@@ -463,18 +494,17 @@ def expand(spec: str):
 
 def scan_port_buffered(sc: Scanner, port: int) -> tuple[int, str]:
     """
-    Scan a single port and capture all output to a buffer.
+    Scan a single port and capture all output to a thread-local buffer.
     Returns: (port_number, buffered_output_string)
 
     Used for parallel scanning to keep output organized.
+    Uses thread-local storage to ensure each thread's output is isolated.
     """
-    import sys
     from io import StringIO
 
-    # Redirect stdout to buffer
-    old_stdout = sys.stdout
+    # Create thread-local buffer for this scan
     buffer = StringIO()
-    sys.stdout = buffer
+    _thread_local.buffer = buffer
 
     try:
         scan_port(sc, port)
@@ -483,8 +513,8 @@ def scan_port_buffered(sc: Scanner, port: int) -> tuple[int, str]:
         err(f"Something went wrong while scanning port {port}: {e}")
         print("         " + "Tip: Re-run with --debug for more details, or try scanning this port manually.")
     finally:
-        # Restore stdout
-        sys.stdout = old_stdout
+        # Clean up thread-local buffer
+        _thread_local.buffer = None
 
     return (port, buffer.getvalue())
 
@@ -537,24 +567,31 @@ def main():
         warn(f"Parallel mode reduces IDS/IPS detection signatures - live output disabled.")
         print()  # spacing
 
+        # Install thread-safe stdout wrapper for parallel mode
+        sys.stdout = ThreadSafeStdout()
+
         results = {}  # port -> output mapping
         completed_ports = []
 
-        with ThreadPoolExecutor(max_workers=args.parallel) as executor:
-            # Submit all port assessments
-            futures = {executor.submit(scan_port_buffered, sc, p): p for p in port_list}
+        try:
+            with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+                # Submit all port assessments
+                futures = {executor.submit(scan_port_buffered, sc, p): p for p in port_list}
 
-            # Collect results as they complete with live progress updates
-            with tqdm(total=len(port_list), desc="Assessing", unit="port",
-                     ncols=100, colour="cyan", bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
-                for future in as_completed(futures):
-                    port, output = future.result()
-                    results[port] = output
-                    completed_ports.append(port)
+                # Collect results as they complete with live progress updates
+                with tqdm(total=len(port_list), desc="Assessing", unit="port",
+                         ncols=100, colour="cyan", bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
+                    for future in as_completed(futures):
+                        port, output = future.result()
+                        results[port] = output
+                        completed_ports.append(port)
 
-                    # Update progress bar with last completed port
-                    pbar.set_postfix_str(f"✓ Port {port}", refresh=True)
-                    pbar.update(1)
+                        # Update progress bar with last completed port
+                        pbar.set_postfix_str(f"✓ Port {port}", refresh=True)
+                        pbar.update(1)
+        finally:
+            # Restore original stdout
+            sys.stdout = _original_stdout
 
         # Show completion summary
         print()
