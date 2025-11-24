@@ -167,6 +167,183 @@ def warn(msg: str):
 def err(msg: str):
     print("      " + Fore.RED + msg + Style.RESET_ALL)
 
+# ───────── enhanced error handling
+class ErrorHandler:
+    """Centralized error handling with detailed, context-aware messages."""
+
+    @staticmethod
+    def network_error(operation: str, target: str, details: str = None):
+        """Handle network-related errors with diagnostic information."""
+        err(f"NETWORK ERROR: Failed to {operation}")
+        print("         " + f"Target: {target}")
+        if details:
+            print("         " + f"Details: {details}")
+        print("         " + Fore.YELLOW + "Possible causes:" + Style.RESET_ALL)
+        print("         " + "  • Target host is down or unreachable")
+        print("         " + "  • Firewall blocking connection")
+        print("         " + "  • Network timeout or connectivity issues")
+        print("         " + "  • DNS resolution failure")
+        print("         " + Fore.CYAN + "Troubleshooting:" + Style.RESET_ALL)
+        print("         " + f"  • Verify host is up: ping {target}")
+        print("         " + "  • Check firewall rules: iptables -L")
+        print("         " + "  • Test connectivity: nc -zv {target} <port>")
+
+    @staticmethod
+    def subprocess_error(cmd: str, operation: str, error_type: str, details: str = None):
+        """Handle subprocess execution errors with command context."""
+        err(f"SUBPROCESS ERROR: {operation} failed")
+        print("         " + f"Command: {cmd}")
+        print("         " + f"Error Type: {error_type}")
+        if details:
+            print("         " + f"Details: {details}")
+
+        if error_type == "FileNotFoundError":
+            print("         " + Fore.YELLOW + "Cause:" + Style.RESET_ALL)
+            print("         " + f"  • Tool '{cmd.split()[0]}' not found in system PATH")
+            print("         " + Fore.CYAN + "Solution:" + Style.RESET_ALL)
+            print("         " + f"  • Install: sudo apt-get install {cmd.split()[0]}")
+            print("         " + f"  • Verify: which {cmd.split()[0]}")
+        elif error_type == "PermissionError":
+            print("         " + Fore.YELLOW + "Cause:" + Style.RESET_ALL)
+            print("         " + "  • Insufficient privileges to execute command")
+            print("         " + "  • File not marked as executable")
+            print("         " + Fore.CYAN + "Solution:" + Style.RESET_ALL)
+            print("         " + "  • Run with sudo: sudo ./eva.py ...")
+            print("         " + f"  • Make executable: chmod +x {cmd.split()[0]}")
+        elif error_type == "TimeoutExpired":
+            print("         " + Fore.YELLOW + "Cause:" + Style.RESET_ALL)
+            print("         " + "  • Command took longer than allowed timeout")
+            print("         " + "  • Target not responding or very slow")
+            print("         " + Fore.CYAN + "Solution:" + Style.RESET_ALL)
+            print("         " + "  • Re-run with --debug for verbose output")
+            print("         " + "  • Try running command manually to test")
+            print("         " + "  • Check if target is rate-limiting")
+
+    @staticmethod
+    def tool_missing_error(tool: str, port: int = None, alternative: str = None):
+        """Handle missing tool dependencies with installation guidance."""
+        context = f" for port {port}" if port else ""
+        err(f"DEPENDENCY ERROR: Required tool '{tool}' not found{context}")
+        print("         " + Fore.YELLOW + "Impact:" + Style.RESET_ALL)
+        print("         " + f"  • Cannot perform {tool} assessment")
+        print("         " + "  • Scan results will be incomplete")
+        print("         " + Fore.CYAN + "Installation:" + Style.RESET_ALL)
+
+        # Provide specific installation instructions
+        install_map = {
+            "nmap": "sudo apt-get install nmap",
+            "nc": "sudo apt-get install netcat-traditional",
+            "curl": "sudo apt-get install curl",
+            "dig": "sudo apt-get install dnsutils",
+            "snmp-check": "sudo apt-get install snmpcheck",
+            "ssh-audit": "pip install ssh-audit",
+            "ike-scan": "sudo apt-get install ike-scan",
+            "firefox": "sudo apt-get install firefox-esr",
+            "testssl": "git clone https://github.com/drwetter/testssl.sh.git /root/tools/testssl.sh",
+        }
+
+        if tool in install_map:
+            print("         " + f"  • {install_map[tool]}")
+        else:
+            print("         " + f"  • sudo apt-get install {tool}")
+
+        print("         " + f"  • Verify installation: which {tool}")
+
+        if alternative:
+            print("         " + Fore.GREEN + "Alternative:" + Style.RESET_ALL)
+            print("         " + f"  • {alternative}")
+
+    @staticmethod
+    def dns_resolution_error(hostname: str, dns_error: str):
+        """Handle DNS resolution failures with detailed diagnostics."""
+        err(f"DNS RESOLUTION ERROR: Cannot resolve hostname '{hostname}'")
+        print("         " + f"DNS Error: {dns_error}")
+        print("         " + Fore.YELLOW + "Possible causes:" + Style.RESET_ALL)
+        print("         " + "  • Hostname does not exist")
+        print("         " + "  • DNS server unreachable or misconfigured")
+        print("         " + "  • Temporary DNS resolution failure")
+        print("         " + "  • Network connectivity issues")
+        print("         " + Fore.CYAN + "Troubleshooting:" + Style.RESET_ALL)
+        print("         " + f"  • Test DNS: nslookup {hostname}")
+        print("         " + f"  • Test DNS: dig {hostname}")
+        print("         " + "  • Try different DNS: cat /etc/resolv.conf")
+        print("         " + "  • Use IP address directly: --target <IP>")
+
+    @staticmethod
+    def port_validation_error(port_spec: str, error_msg: str):
+        """Handle port specification validation errors."""
+        err(f"PORT VALIDATION ERROR: Invalid port specification")
+        print("         " + f"Your input: {port_spec}")
+        print("         " + f"Error: {error_msg}")
+        print("         " + Fore.YELLOW + "Port requirements:" + Style.RESET_ALL)
+        print("         " + "  • Must be between 1 and 65535")
+        print("         " + "  • Can use comma-separated list: 80,443,8080")
+        print("         " + "  • Can use ranges: 1-1024")
+        print("         " + "  • Can combine both: 22,80,443,8000-8888")
+        print("         " + Fore.GREEN + "Examples:" + Style.RESET_ALL)
+        print("         " + "  • Single port: --ports 80")
+        print("         " + "  • Multiple ports: --ports 22,80,443")
+        print("         " + "  • Port range: --ports 1-1024")
+        print("         " + "  • Mixed: --ports 22,80,443,8000-9000")
+
+    @staticmethod
+    def thread_safety_error(port: int, thread_id: str, details: str):
+        """Handle thread-safety issues in parallel scanning."""
+        err(f"THREAD SAFETY ERROR: Port {port} encountered threading issue")
+        print("         " + f"Thread ID: {thread_id}")
+        print("         " + f"Details: {details}")
+        print("         " + Fore.YELLOW + "Possible causes:" + Style.RESET_ALL)
+        print("         " + "  • Race condition in buffer management")
+        print("         " + "  • Thread-local storage corruption")
+        print("         " + "  • Concurrent stdout access conflict")
+        print("         " + Fore.CYAN + "Troubleshooting:" + Style.RESET_ALL)
+        print("         " + "  • Try sequential mode: remove --parallel flag")
+        print("         " + "  • Reduce workers: --parallel 2")
+        print("         " + "  • Re-run with --debug for detailed output")
+
+    @staticmethod
+    def http_request_error(url: str, error_type: str, status_code: int = None):
+        """Handle HTTP/HTTPS request failures."""
+        err(f"HTTP REQUEST ERROR: Failed to access {url}")
+        if status_code:
+            print("         " + f"HTTP Status Code: {status_code}")
+        print("         " + f"Error Type: {error_type}")
+        print("         " + Fore.YELLOW + "Possible causes:" + Style.RESET_ALL)
+
+        if error_type == "ConnectionError":
+            print("         " + "  • Server not responding")
+            print("         " + "  • Service not running on specified port")
+            print("         " + "  • Network connectivity issues")
+        elif error_type == "Timeout":
+            print("         " + "  • Server taking too long to respond")
+            print("         " + "  • High latency or slow network")
+            print("         " + "  • Server overloaded")
+        elif error_type == "SSLError":
+            print("         " + "  • Invalid SSL/TLS certificate")
+            print("         " + "  • Certificate validation failure")
+            print("         " + "  • Protocol mismatch (HTTP vs HTTPS)")
+
+        print("         " + Fore.CYAN + "Troubleshooting:" + Style.RESET_ALL)
+        print("         " + f"  • Test manually: curl -I -k {url}")
+        print("         " + f"  • Check service: nc -zv <host> <port>")
+        print("         " + "  • Verify protocol (http/https)")
+
+    @staticmethod
+    def scan_failure_error(port: int, phase: str, exception_type: str, msg: str = None):
+        """Handle port scanning failures with phase context."""
+        err(f"SCAN FAILURE: Port {port} - {phase} phase failed")
+        print("         " + f"Exception Type: {exception_type}")
+        if msg:
+            print("         " + f"Message: {msg}")
+        print("         " + Fore.YELLOW + "Context:" + Style.RESET_ALL)
+        print("         " + f"  • Failed during: {phase}")
+        print("         " + f"  • Port being scanned: {port}")
+        print("         " + Fore.CYAN + "Recovery options:" + Style.RESET_ALL)
+        print("         " + "  • Scan this port individually to isolate issue")
+        print("         " + f"  • Command: sudo ./eva.py --target <IP> --ports {port}")
+        print("         " + "  • Enable debug mode: add --debug flag")
+        print("         " + "  • Check tool availability: run dependency check")
+
 # ───────── ASCII art banner
 def print_banner():
     """Display EVA ASCII art banner with cyberpunk styling."""
@@ -249,30 +426,57 @@ def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
                 buf.append(line)
                 if timeout is not None and (time.time() - start) > timeout:
                     p.kill()
-                    err("[TIMEOUT] The command took too long and was stopped.")
-                    warn("Tip: Re-run with --debug or run the command manually to investigate.")
+                    ErrorHandler.subprocess_error(
+                        cmd=" ".join(cmd),
+                        operation=desc,
+                        error_type="TimeoutExpired",
+                        details=f"Command exceeded {timeout}s timeout"
+                    )
                     break
             p.wait()
             if p.returncode == 0:
                 ok("SUCCESS ✓")
             else:
-                err(f"FAILED (exit code {p.returncode}).")
+                err(f"COMMAND FAILED: Non-zero exit code {p.returncode}")
                 tail = "\n".join(buf[-10:])
                 if tail.strip():
-                    warn("Last lines from the tool for context:")
+                    warn("Last 10 lines of output for context:")
                     for ln in tail.splitlines():
                         print("         " + ln)
-                warn("Tip: Re-run with --debug to see more detail, or run the command manually.")
+                print("         " + Fore.CYAN + "Debugging steps:" + Style.RESET_ALL)
+                print("         " + f"  • Run manually: {' '.join(cmd)}")
+                print("         " + "  • Enable verbose mode: add --debug flag")
+                print("         " + f"  • Check tool version: {cmd[0]} --version")
             return "\n".join(buf).lower()
-    except FileNotFoundError:
-        err(f"Cannot run '{cmd[0]}' because it was not found.")
-        print("         " + f"Install suggestion: sudo apt-get install {cmd[0]}")
-    except PermissionError:
-        err(f"Permission denied when executing '{cmd[0]}'.")
-        print("         " + "Tip: Ensure the file is executable (chmod +x) or run with sudo/root.")
+    except FileNotFoundError as e:
+        ErrorHandler.subprocess_error(
+            cmd=" ".join(cmd),
+            operation=desc,
+            error_type="FileNotFoundError",
+            details=str(e)
+        )
+    except PermissionError as e:
+        ErrorHandler.subprocess_error(
+            cmd=" ".join(cmd),
+            operation=desc,
+            error_type="PermissionError",
+            details=str(e)
+        )
+    except subprocess.TimeoutExpired as e:
+        ErrorHandler.subprocess_error(
+            cmd=" ".join(cmd),
+            operation=desc,
+            error_type="TimeoutExpired",
+            details=f"Process did not complete within {e.timeout}s"
+        )
     except Exception as e:
-        err(f"Unexpected problem while running the command: {e}")
-        warn("Tip: Re-run with --debug for additional diagnostics.")
+        err(f"UNEXPECTED ERROR: {type(e).__name__} during {desc}")
+        print("         " + f"Command: {' '.join(cmd)}")
+        print("         " + f"Exception: {str(e)}")
+        print("         " + Fore.CYAN + "Debug information:" + Style.RESET_ALL)
+        print("         " + f"  • Exception type: {type(e).__module__}.{type(e).__name__}")
+        print("         " + "  • Re-run with --debug for stack trace")
+        print("         " + "  • Report bug if issue persists")
     return ""
 
 def run_testssl(args: list[str], desc: str) -> str:
@@ -306,9 +510,21 @@ def open_firefox(url: str, suppress: bool):
         )
         ok(f"[+] Opened Firefox: {url}")
     except FileNotFoundError:
-        warn("Firefox not found; cannot open the page automatically.")
+        ErrorHandler.tool_missing_error("firefox", alternative="Use --no-firefox flag to disable browser")
+    except PermissionError as e:
+        ErrorHandler.subprocess_error(
+            cmd="firefox -new-window " + url,
+            operation="Open Firefox",
+            error_type="PermissionError",
+            details=str(e)
+        )
     except Exception as e:
-        warn(f"Could not open Firefox for {url}: {e}")
+        err(f"FIREFOX LAUNCH ERROR: Failed to open {url}")
+        print("         " + f"Exception: {type(e).__name__}: {str(e)}")
+        print("         " + Fore.CYAN + "Workaround:" + Style.RESET_ALL)
+        print("         " + "  • Open URL manually in browser")
+        print("         " + "  • Use --no-firefox flag to suppress this")
+        print("         " + f"  • URL: {url}")
 
 def http_descr(code: int) -> str:
     return f"{HTTPStatus(code).phrase} ({code})"
@@ -333,8 +549,23 @@ def webpage_visibility(sc: Scanner, port: int, proto: str):
         print("      Main page ->", http_descr(r.status_code))
         if r.status_code == 200:
             open_firefox(url, sc.a.no_firefox)
+    except requests.ConnectionError as e:
+        ErrorHandler.http_request_error(url, "ConnectionError")
+        return
+    except requests.Timeout as e:
+        ErrorHandler.http_request_error(url, "Timeout")
+        return
+    except requests.exceptions.SSLError as e:
+        ErrorHandler.http_request_error(url, "SSLError")
+        return
     except requests.RequestException as e:
-        warn(f"Could not reach {url}: {e}")
+        err(f"HTTP REQUEST FAILED: Could not access {url}")
+        print("         " + f"Error type: {type(e).__name__}")
+        print("         " + f"Details: {str(e)}")
+        print("         " + Fore.CYAN + "Suggestions:" + Style.RESET_ALL)
+        print("         " + f"  • Verify service is running: nc -zv {sc.tgt} {port}")
+        print("         " + f"  • Test with curl: curl -I -k {url}")
+        print("         " + "  • Check if WAF/firewall is blocking requests")
         return
 
     try:
@@ -345,8 +576,14 @@ def webpage_visibility(sc: Scanner, port: int, proto: str):
             print("      " + Fore.MAGENTA + "robots.txt contents:" + Style.RESET_ALL)
             for ln in r.text.splitlines():
                 print("         " + ln)
+    except requests.ConnectionError:
+        warn("robots.txt: Connection refused (may not exist)")
+    except requests.Timeout:
+        warn("robots.txt: Request timed out")
+    except requests.exceptions.SSLError:
+        warn("robots.txt: SSL/TLS error")
     except requests.RequestException as e:
-        warn(f"Could not fetch robots.txt at {robots_url}: {e}")
+        warn(f"robots.txt: Could not fetch ({type(e).__name__})")
 
 # ───────── per-port handlers
 def h_ssh(sc: Scanner, port: int):
@@ -522,10 +759,16 @@ def scan_port_buffered(sc: Scanner, port: int) -> tuple[int, str]:
 
     try:
         scan_port(sc, port)
+    except KeyboardInterrupt:
+        raise  # Propagate interrupt
     except Exception as e:
-        banner(Fore.RED, f"Port {port} — unexpected error")
-        err(f"Something went wrong while scanning port {port}: {e}")
-        print("         " + "Tip: Re-run with --debug for more details, or try scanning this port manually.")
+        banner(Fore.RED, f"Port {port} — Scan Error")
+        ErrorHandler.scan_failure_error(
+            port=port,
+            phase="Buffered parallel scan",
+            exception_type=type(e).__name__,
+            msg=str(e)
+        )
     finally:
         # Clean up thread-local buffer
         _thread_local.buffer = None
@@ -555,10 +798,22 @@ def main():
     host = strip_proto(args.target)
     try:
         tgt = host if is_ip(host) else resolve(host)
+    except socket.gaierror as e:
+        banner(Fore.RED, "DNS Resolution Failure")
+        ErrorHandler.dns_resolution_error(host, str(e))
+        sys.exit(1)
+    except socket.herror as e:
+        banner(Fore.RED, "DNS Resolution Failure")
+        ErrorHandler.dns_resolution_error(host, f"Host error: {str(e)}")
+        sys.exit(1)
     except Exception as e:
-        banner(Fore.RED, "Target resolution error")
-        err(f"Could not resolve '{host}': {e}")
-        print("         " + "Check DNS/host spelling or try using the raw IP address.")
+        banner(Fore.RED, "Target Resolution Error")
+        err(f"RESOLUTION ERROR: Failed to resolve target '{host}'")
+        print("         " + f"Exception: {type(e).__name__}: {str(e)}")
+        print("         " + Fore.CYAN + "Troubleshooting:" + Style.RESET_ALL)
+        print("         " + "  • Verify target format is correct")
+        print("         " + "  • Use IP address directly if DNS fails")
+        print("         " + f"  • Test resolution: nslookup {host}")
         sys.exit(1)
 
     # Display target information
@@ -570,9 +825,19 @@ def main():
     try:
         port_list = expand(args.ports)
     except ValueError as e:
-        banner(Fore.RED, "Port specification error")
-        err(f"Could not resolve '{host}': {e}")
-        print("         " + "Valid formats: 80, 80,443, 1-1024, 22,80,443,8000-8888")
+        banner(Fore.RED, "Port Specification Error")
+        ErrorHandler.port_validation_error(args.ports, str(e))
+        sys.exit(1)
+    except Exception as e:
+        banner(Fore.RED, "Port Parsing Error")
+        err(f"PORT PARSING ERROR: Failed to parse port specification")
+        print("         " + f"Your input: {args.ports}")
+        print("         " + f"Exception: {type(e).__name__}: {str(e)}")
+        print("         " + Fore.CYAN + "Examples:" + Style.RESET_ALL)
+        print("         " + "  • --ports 80")
+        print("         " + "  • --ports 22,80,443")
+        print("         " + "  • --ports 1-1024")
+        print("         " + "  • --ports 22,80,443,8000-9000")
         sys.exit(1)
 
     check_dependencies(port_list, args)
@@ -655,10 +920,17 @@ def main():
             print()  # Spacing after progress bar updates
             try:
                 scan_port(sc, p)
+            except KeyboardInterrupt:
+                print(f"\n{Fore.YELLOW}Scan interrupted by user. Partial results displayed above.{Style.RESET_ALL}")
+                break
             except Exception as e:
                 banner(Fore.RED, f"Port {p} — Assessment Error")
-                err(f"Something went wrong while assessing port {p}: {e}")
-                print("         " + "Tip: Re-run with --debug for more details, or try assessing this port manually.")
+                ErrorHandler.scan_failure_error(
+                    port=p,
+                    phase="Sequential scan",
+                    exception_type=type(e).__name__,
+                    msg=str(e)
+                )
             time.sleep(PACE)
 
         print()  # Spacing after progress bar completes
@@ -677,10 +949,24 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        print(f"\n\n{Fore.YELLOW}╔════════════════════════════════════════════════════════════════════════╗{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}║{Style.RESET_ALL}  {Fore.RED}SCAN INTERRUPTED{Style.RESET_ALL} - User requested termination                        {Fore.YELLOW}║{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}║{Style.RESET_ALL}  Partial results have been displayed above                             {Fore.YELLOW}║{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}╚════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}\n")
+        sys.exit(130)  # Standard exit code for Ctrl+C
     except SystemExit:
         raise
     except Exception as e:
-        banner(Fore.RED, "Fatal error")
-        err(f"The scan encountered a fatal error: {e}")
-        print("         " + "Tip: Re-run with --debug to view internal diagnostics.")
+        banner(Fore.RED, "Fatal Error - EVA Scan Terminated")
+        err(f"FATAL ERROR: Unhandled exception caused scan termination")
+        print("         " + f"Exception Type: {type(e).__module__}.{type(e).__name__}")
+        print("         " + f"Exception Message: {str(e)}")
+        print("         " + Fore.YELLOW + "This is an unexpected error" + Style.RESET_ALL)
+        print("         " + Fore.CYAN + "Next steps:" + Style.RESET_ALL)
+        print("         " + "  • Re-run with --debug flag for full stack trace")
+        print("         " + "  • Check system logs: dmesg | tail")
+        print("         " + "  • Verify all dependencies are installed correctly")
+        print("         " + "  • Report bug at: https://github.com/RKucher1/EVA-Tool/issues")
+        print("         " + Fore.RED + "Include the above error information in your bug report" + Style.RESET_ALL)
         sys.exit(1)
