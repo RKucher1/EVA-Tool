@@ -173,12 +173,12 @@ def print_banner():
     banner_art = f"""
 {Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                               ║
-║     {Fore.RED}███████╗{Fore.CYAN}╗   ╗{Fore.RED}███████╗        {Fore.YELLOW}External Vulnerability Assessment{Fore.CYAN}      ║
+║     {Fore.RED}███████╗{Fore.CYAN}╦   ╦{Fore.RED}███████╗        {Fore.YELLOW}External Vulnerability Assessment{Fore.CYAN}      ║
 ║     {Fore.RED}██╔════╝{Fore.CYAN}╚╗ ╔╝{Fore.RED}██╔══██╗       {Fore.WHITE}Intelligent Network Security Scanner{Fore.CYAN}      ║
 ║     {Fore.RED}█████╗  {Fore.CYAN} ╚╦╝ {Fore.RED}███████║                                              {Fore.CYAN}║
-║     {Fore.RED}██╔══╝  {Fore.CYAN} ╔╩╗ {Fore.RED}██╔══██║       {Fore.GREEN}» {Fore.WHITE}Version 8.3{Fore.CYAN}                              ║
-║     {Fore.RED}███████╗{Fore.CYAN}╔╝ ╚╗{Fore.RED}██║  ██║       {Fore.GREEN}» {Fore.WHITE}Author: Ryan Kucher{Fore.CYAN}                      ║
-║     {Fore.RED}╚══════╝{Fore.CYAN}╝   ╚{Fore.RED}╚═╝  ╚═╝       {Fore.GREEN}» {Fore.WHITE}Pentesting & Security Research{Fore.CYAN}           ║
+║     {Fore.RED}██╔══╝  {Fore.CYAN}  ║  {Fore.RED}██╔══██║       {Fore.GREEN}» {Fore.WHITE}Version 8.3{Fore.CYAN}                              ║
+║     {Fore.RED}███████╗{Fore.CYAN}  ║  {Fore.RED}██║  ██║       {Fore.GREEN}» {Fore.WHITE}Author: Ryan Kucher{Fore.CYAN}                      ║
+║     {Fore.RED}╚══════╝{Fore.CYAN}  ╩  {Fore.RED}╚═╝  ╚═╝       {Fore.GREEN}» {Fore.WHITE}Pentesting & Security Research{Fore.CYAN}           ║
 ║                                                                               ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 """
@@ -637,8 +637,11 @@ def main():
         print(f"{Fore.CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓{Style.RESET_ALL}")
         print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.YELLOW}▶ SEQUENTIAL ASSESSMENT MODE{Style.RESET_ALL} - {Fore.WHITE}Live output enabled{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
         print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.GREEN}Real-time streaming results with immediate feedback{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}\n")
+        print(f"{Fore.CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}")
+        print()  # Spacing before progress bar
+
         for p in tqdm(port_list, desc="Assessing", unit="port", ncols=80, colour="cyan"):
+            print()  # Spacing after progress bar updates
             try:
                 scan_port(sc, p)
             except Exception as e:
@@ -647,15 +650,17 @@ def main():
                 print("         " + "Tip: Re-run with --debug for more details, or try assessing this port manually.")
             time.sleep(PACE)
 
+        print()  # Spacing after progress bar completes
+
     # Final completion banner
     print()
     print(f"{Fore.GREEN}╔═══════════════════════════════════════════════════════════════════════════════╗{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}                                                                               {Fore.GREEN}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}               {Fore.YELLOW}✓ VULNERABILITY ASSESSMENT COMPLETE{Style.RESET_ALL}                        {Fore.GREEN}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}                                                                               {Fore.GREEN}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}         {Fore.CYAN}Thank you for using EVA - External Vulnerability Assessment{Style.RESET_ALL}       {Fore.GREEN}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}                   {Fore.WHITE}Stay secure, stay vigilant{Style.RESET_ALL}                               {Fore.GREEN}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}                                                                               {Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{' ' * 79}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}               {Fore.YELLOW}✓ VULNERABILITY ASSESSMENT COMPLETE{Style.RESET_ALL}{' ' * 28}{Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{' ' * 79}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}         {Fore.CYAN}Thank you for using EVA - External Vulnerability Assessment{Style.RESET_ALL}{' ' * 7}{Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}                   {Fore.WHITE}Stay secure, stay vigilant{Style.RESET_ALL}{' ' * 27}{Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{' ' * 79}║{Style.RESET_ALL}")
     print(f"{Fore.GREEN}╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}")
 
 if __name__ == "__main__":
