@@ -588,7 +588,13 @@ def main():
         print(f"{Fore.MAGENTA}┃{Style.RESET_ALL} {Fore.WHITE}Results buffered and displayed sequentially after completion{Style.RESET_ALL}             {Fore.MAGENTA}┃{Style.RESET_ALL}")
         print(f"{Fore.MAGENTA}┃{Style.RESET_ALL} {Fore.GREEN}Parallel mode reduces IDS/IPS detection signatures{Style.RESET_ALL}                     {Fore.MAGENTA}┃{Style.RESET_ALL}")
         print(f"{Fore.MAGENTA}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}")
-        print()  # spacing
+        print()
+
+        # Beginning assessment banner
+        print(f"{Fore.GREEN}{'═' * 80}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}║{Style.RESET_ALL} {Fore.YELLOW}▶ BEGINNING VULNERABILITY ASSESSMENT{Style.RESET_ALL} {Fore.CYAN}[{len(port_list)} ports]{Style.RESET_ALL}                       {Fore.GREEN}║{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}{'═' * 80}{Style.RESET_ALL}")
+        print()
 
         # Install thread-safe stdout wrapper for parallel mode
         sys.stdout = ThreadSafeStdout()
@@ -637,7 +643,13 @@ def main():
         print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.YELLOW}▶ SEQUENTIAL ASSESSMENT MODE{Style.RESET_ALL} - {Fore.WHITE}Live output enabled{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
         print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.GREEN}Real-time streaming results with immediate feedback{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
         print(f"{Fore.CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}")
-        print()  # Spacing before progress bar
+        print()
+
+        # Beginning assessment banner
+        print(f"{Fore.GREEN}{'═' * 80}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}║{Style.RESET_ALL} {Fore.YELLOW}▶ BEGINNING VULNERABILITY ASSESSMENT{Style.RESET_ALL} {Fore.CYAN}[{len(port_list)} ports]{Style.RESET_ALL}                       {Fore.GREEN}║{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}{'═' * 80}{Style.RESET_ALL}")
+        print()
 
         for p in tqdm(port_list, desc="Assessing", unit="port", ncols=80, colour="cyan"):
             print()  # Spacing after progress bar updates
