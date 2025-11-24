@@ -173,18 +173,17 @@ def print_banner():
     banner_art = f"""
 {Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                               ║
-║     {Fore.RED}███████╗{Fore.CYAN}╦   ╦{Fore.RED}███████╗        {Fore.YELLOW}External Vulnerability Assessment{Fore.CYAN}      ║
-║     {Fore.RED}██╔════╝{Fore.CYAN}╚╗ ╔╝{Fore.RED}██╔══██╗       {Fore.WHITE}Intelligent Network Security Scanner{Fore.CYAN}      ║
-║     {Fore.RED}█████╗  {Fore.CYAN} ╚╦╝ {Fore.RED}███████║                                              {Fore.CYAN}║
-║     {Fore.RED}██╔══╝  {Fore.CYAN}  ║  {Fore.RED}██╔══██║       {Fore.GREEN}» {Fore.WHITE}Version 8.3{Fore.CYAN}                              ║
-║     {Fore.RED}███████╗{Fore.CYAN}  ║  {Fore.RED}██║  ██║       {Fore.GREEN}» {Fore.WHITE}Author: Ryan Kucher{Fore.CYAN}                      ║
-║     {Fore.RED}╚══════╝{Fore.CYAN}  ╩  {Fore.RED}╚═╝  ╚═╝       {Fore.GREEN}» {Fore.WHITE}Pentesting & Security Research{Fore.CYAN}           ║
+║     {Fore.RED}███████╗{Fore.CYAN}╦     ╦{Fore.RED}███████╗       {Fore.YELLOW}External Vulnerability Assessment{Fore.CYAN}      ║
+║     {Fore.RED}██╔════╝{Fore.CYAN}╚╗   ╔╝{Fore.RED}██╔══██╗      {Fore.WHITE}Intelligent Network Security Scanner{Fore.CYAN}      ║
+║     {Fore.RED}█████╗  {Fore.CYAN} ╚╗ ╔╝ {Fore.RED}███████║                                              {Fore.CYAN}║
+║     {Fore.RED}██╔══╝  {Fore.CYAN}  ╚╦╝  {Fore.RED}██╔══██║      {Fore.GREEN}» {Fore.WHITE}Version 8.3{Fore.CYAN}                              ║
+║     {Fore.RED}███████╗{Fore.CYAN}  ║   {Fore.RED}██║  ██║      {Fore.GREEN}» {Fore.WHITE}Author: Ryan Kucher{Fore.CYAN}                      ║
+║     {Fore.RED}╚══════╝{Fore.CYAN}  ╩   {Fore.RED}╚═╝  ╚═╝      {Fore.GREEN}» {Fore.WHITE}Pentesting & Security Research{Fore.CYAN}           ║
 ║                                                                               ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 """
     print(banner_art)
-    print(f"{Fore.YELLOW}[!]{Style.RESET_ALL} {Fore.WHITE}Authorized Use Only{Style.RESET_ALL} - {Fore.CYAN}Live Vulnerability Assessment Initiated{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}{'─' * 79}{Style.RESET_ALL}\n")
+    print(f"\n{Fore.YELLOW}[!]{Style.RESET_ALL} {Fore.WHITE}Authorized Use Only{Style.RESET_ALL} - {Fore.CYAN}Live Vulnerability Assessment Initiated{Style.RESET_ALL}\n")
 
 # ───────── dependency preflight
 def tool_path(name: str) -> str | None:
