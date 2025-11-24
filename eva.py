@@ -173,12 +173,12 @@ def print_banner():
     banner_art = f"""
 {Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                               ║
-║     {Fore.RED}███████╗{Fore.CYAN}╦     ╦{Fore.RED}███████╗       {Fore.YELLOW}External Vulnerability Assessment{Fore.CYAN}      ║
-║     {Fore.RED}██╔════╝{Fore.CYAN}╚╗   ╔╝{Fore.RED}██╔══██╗      {Fore.WHITE}Intelligent Network Security Scanner{Fore.CYAN}      ║
-║     {Fore.RED}█████╗  {Fore.CYAN} ╚╗ ╔╝ {Fore.RED}███████║                                              {Fore.CYAN}║
-║     {Fore.RED}██╔══╝  {Fore.CYAN}  ╚╦╝  {Fore.RED}██╔══██║      {Fore.GREEN}» {Fore.WHITE}Version 8.3{Fore.CYAN}                              ║
-║     {Fore.RED}███████╗{Fore.CYAN}  ║   {Fore.RED}██║  ██║      {Fore.GREEN}» {Fore.WHITE}Author: Ryan Kucher{Fore.CYAN}                      ║
-║     {Fore.RED}╚══════╝{Fore.CYAN}  ╩   {Fore.RED}╚═╝  ╚═╝      {Fore.GREEN}» {Fore.WHITE}Pentesting & Security Research{Fore.CYAN}           ║
+║     {Fore.RED}███████╗{Fore.RED}╦     ╦{Fore.RED}███████╗       {Fore.YELLOW}External Vulnerability Assessment{Fore.CYAN}           ║
+║     {Fore.RED}██╔════╝{Fore.RED}╚╗   ╔╝{Fore.RED}██╔══██╗      {Fore.WHITE}Intelligent Network Security Scanner{Fore.CYAN}         ║
+║     {Fore.RED}█████╗  {Fore.RED} ╚╗ ╔╝ {Fore.RED}███████║                                              {Fore.CYAN}     ║
+║     {Fore.RED}██╔══╝  {Fore.RED}  ╚╦╝  {Fore.RED}██╔══██║      {Fore.GREEN}» {Fore.WHITE}Version 8.3{Fore.CYAN}                                ║
+║     {Fore.RED}███████╗{Fore.RED}   ║   {Fore.RED}██║  ██║      {Fore.GREEN}» {Fore.WHITE}Author: Ryan Kucher{Fore.CYAN}                        ║
+║     {Fore.RED}╚══════╝{Fore.RED}   ╩   {Fore.RED}╚═╝  ╚═╝      {Fore.GREEN}» {Fore.WHITE}Pentesting & Security Research{Fore.CYAN}             ║
 ║                                                                               ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 """
@@ -563,8 +563,8 @@ def main():
 
     # Display target information
     print(f"{Fore.CYAN}╔══════════════════════════════════════════════════════════════════════════════╗{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}║{Style.RESET_ALL} {Fore.GREEN}TARGET:{Style.RESET_ALL} {Fore.WHITE}{tgt:<67}{Fore.CYAN}║{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}║{Style.RESET_ALL} {Fore.GREEN}PORTS: {Style.RESET_ALL} {Fore.WHITE}{args.ports:<67}{Fore.CYAN}║{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║{Style.RESET_ALL} {Fore.GREEN}TARGET:{Style.RESET_ALL} {Fore.WHITE}{tgt:<67}{Fore.CYAN}  ║{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║{Style.RESET_ALL} {Fore.GREEN}PORTS: {Style.RESET_ALL} {Fore.WHITE}{args.ports:<67}{Fore.CYAN}  ║{Style.RESET_ALL}")
     print(f"{Fore.CYAN}╚══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}\n")
 
     try:
@@ -592,7 +592,7 @@ def main():
 
         # Beginning assessment banner
         print(f"{Fore.GREEN}{'═' * 80}{Style.RESET_ALL}")
-        print(f"{Fore.GREEN}║{Style.RESET_ALL} {Fore.YELLOW}▶ BEGINNING VULNERABILITY ASSESSMENT{Style.RESET_ALL} {Fore.CYAN}[{len(port_list)} ports]{Style.RESET_ALL}                       {Fore.GREEN}║{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}║{Style.RESET_ALL} {Fore.YELLOW}▶ BEGINNING VULNERABILITY ASSESSMENT{Style.RESET_ALL} {Fore.CYAN}[{len(port_list)} ports]{Style.RESET_ALL}                       {Fore.GREEN}           ║{Style.RESET_ALL}")
         print(f"{Fore.GREEN}{'═' * 80}{Style.RESET_ALL}")
         print()
 
@@ -640,8 +640,8 @@ def main():
     else:
         # ─── Sequential mode: traditional live output ───
         print(f"{Fore.CYAN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.YELLOW}▶ SEQUENTIAL ASSESSMENT MODE{Style.RESET_ALL} - {Fore.WHITE}Live output enabled{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.GREEN}Real-time streaming results with immediate feedback{Style.RESET_ALL}                       {Fore.CYAN}┃{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.YELLOW}▶ SEQUENTIAL ASSESSMENT MODE{Style.RESET_ALL} - {Fore.WHITE}Live output enabled{Style.RESET_ALL}                       {Fore.CYAN}  ┃{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}┃{Style.RESET_ALL} {Fore.GREEN}Real-time streaming results with immediate feedback{Style.RESET_ALL}                       {Fore.CYAN} ┃{Style.RESET_ALL}")
         print(f"{Fore.CYAN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{Style.RESET_ALL}")
         print()
 
@@ -667,10 +667,10 @@ def main():
     print()
     print(f"{Fore.GREEN}╔═══════════════════════════════════════════════════════════════════════════════╗{Style.RESET_ALL}")
     print(f"{Fore.GREEN}║{' ' * 79}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}               {Fore.YELLOW}✓ VULNERABILITY ASSESSMENT COMPLETE{Style.RESET_ALL}{' ' * 28}{Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}               {Fore.YELLOW}✓ VULNERABILITY ASSESSMENT COMPLETE{Style.RESET_ALL}{' ' * 28}{Fore.GREEN} ║{Style.RESET_ALL}")
     print(f"{Fore.GREEN}║{' ' * 79}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}         {Fore.CYAN}Thank you for using EVA - External Vulnerability Assessment{Style.RESET_ALL}{' ' * 7}{Fore.GREEN}║{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}║{Style.RESET_ALL}                   {Fore.WHITE}Stay secure, stay vigilant{Style.RESET_ALL}{' ' * 27}{Fore.GREEN}║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}         {Fore.CYAN}Thank you for using EVA - External Vulnerability Assessment{Style.RESET_ALL}{' ' * 7}{Fore.GREEN}    ║{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}║{Style.RESET_ALL}                   {Fore.WHITE}Stay secure, stay vigilant{Style.RESET_ALL}{' ' * 27}{Fore.GREEN}       ║{Style.RESET_ALL}")
     print(f"{Fore.GREEN}║{' ' * 79}║{Style.RESET_ALL}")
     print(f"{Fore.GREEN}╚═══════════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}")
 
