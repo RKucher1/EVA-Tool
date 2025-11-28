@@ -59,6 +59,10 @@ from tqdm import tqdm
 init(autoreset=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Thread-local storage for output redirection in concurrent scans
+import threading
+_thread_local = threading.local()
+
 # ───────── constants / tuning
 CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts (NOT used for testssl)
 PACE = 0.3                              # pause between ports to avoid FW throttling
@@ -118,23 +122,30 @@ def require_root():
         sys.exit(1)
 
 # ───────── console formatting helpers
+def _write(msg: str):
+    """Write to thread-local output file if set, otherwise stdout"""
+    if hasattr(_thread_local, 'output_file'):
+        _thread_local.output_file.write(msg + "\n")
+    else:
+        print(msg)
+
 def banner(color, text: str):
     bar = color + "=" * 72 + Style.RESET_ALL
-    print("\n" + bar)
-    print(color + text + Style.RESET_ALL)
-    print(bar)
+    _write("\n" + bar)
+    _write(color + text + Style.RESET_ALL)
+    _write(bar)
 
 def show_cmd(cmd):
-    print(Fore.LIGHTBLUE_EX + "      Command: " + " ".join(cmd) + Style.RESET_ALL)
+    _write(Fore.LIGHTBLUE_EX + "      Command: " + " ".join(cmd) + Style.RESET_ALL)
 
 def ok(msg: str):
-    print("      " + Fore.GREEN + msg + Style.RESET_ALL)
+    _write("      " + Fore.GREEN + msg + Style.RESET_ALL)
 
 def warn(msg: str):
-    print("      " + Fore.YELLOW + msg + Style.RESET_ALL)
+    _write("      " + Fore.YELLOW + msg + Style.RESET_ALL)
 
 def err(msg: str):
-    print("      " + Fore.RED + msg + Style.RESET_ALL)
+    _write("      " + Fore.RED + msg + Style.RESET_ALL)
 
 # ───────── dependency preflight
 def tool_path(name: str) -> str | None:
@@ -179,15 +190,36 @@ def check_dependencies(ports: list[int], args):
         ok(f"testssl available: {TESTSSL_BIN}")
 
 # ───────── command runners
-def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
+def run_live(cmd, desc, timeout=CMD_TOUT, silent=False, output_file=None) -> str:
     """
     Execute a command, streaming stdout live with nice formatting.
     Returns the complete (lowercased) output for programmatic checks.
 
     timeout=None -> run without any time limit.
+    silent=True -> capture output without printing (for concurrent scans)
+    output_file -> file-like object to write formatted output to (instead of stdout)
     """
-    banner(Fore.YELLOW, f"▶ {desc} (live)")
-    show_cmd(cmd)
+    # Check for thread-local output file (used in concurrent scans)
+    if output_file is None and hasattr(_thread_local, 'output_file'):
+        output_file = _thread_local.output_file
+        silent = True  # Automatically enable silent mode for thread-local output
+
+    def write_output(msg):
+        """Helper to write output to file or stdout"""
+        if output_file:
+            output_file.write(msg + "\n")
+        elif not silent:
+            print(msg)
+
+    if not silent:
+        banner(Fore.YELLOW, f"▶ {desc} (live)")
+        show_cmd(cmd)
+    else:
+        write_output(f"\n{Fore.YELLOW}{'=' * 72}")
+        write_output(f"▶ {desc} (live)")
+        write_output(f"{'=' * 72}{Style.RESET_ALL}")
+        write_output(Fore.LIGHTBLUE_EX + "      Command: " + " ".join(cmd) + Style.RESET_ALL)
+
     buf = []
     start = time.time()
     try:
@@ -200,34 +232,34 @@ def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
         ) as p:
             for ln in p.stdout:
                 line = ln.rstrip("\n")
-                print("      " + line)
+                write_output("      " + line)
                 buf.append(line)
                 if timeout is not None and (time.time() - start) > timeout:
                     p.kill()
-                    err("[TIMEOUT] The command took too long and was stopped.")
-                    warn("Tip: Re-run with --debug or run the command manually to investigate.")
+                    write_output("      " + Fore.RED + "[TIMEOUT] The command took too long and was stopped." + Style.RESET_ALL)
+                    write_output("      " + Fore.YELLOW + "Tip: Re-run with --debug or run the command manually to investigate." + Style.RESET_ALL)
                     break
             p.wait()
             if p.returncode == 0:
-                ok("SUCCESS ✓")
+                write_output("      " + Fore.GREEN + "SUCCESS ✓" + Style.RESET_ALL)
             else:
-                err(f"FAILED (exit code {p.returncode}).")
+                write_output("      " + Fore.RED + f"FAILED (exit code {p.returncode})." + Style.RESET_ALL)
                 tail = "\n".join(buf[-10:])
                 if tail.strip():
-                    warn("Last lines from the tool for context:")
+                    write_output("      " + Fore.YELLOW + "Last lines from the tool for context:" + Style.RESET_ALL)
                     for ln in tail.splitlines():
-                        print("         " + ln)
-                warn("Tip: Re-run with --debug to see more detail, or run the command manually.")
+                        write_output("         " + ln)
+                write_output("      " + Fore.YELLOW + "Tip: Re-run with --debug to see more detail, or run the command manually." + Style.RESET_ALL)
             return "\n".join(buf).lower()
     except FileNotFoundError:
-        err(f"Cannot run '{cmd[0]}' because it was not found.")
-        print("         " + f"Install suggestion: sudo apt-get install {cmd[0]}")
+        write_output("      " + Fore.RED + f"Cannot run '{cmd[0]}' because it was not found." + Style.RESET_ALL)
+        write_output("         " + f"Install suggestion: sudo apt-get install {cmd[0]}")
     except PermissionError:
-        err(f"Permission denied when executing '{cmd[0]}'.")
-        print("         " + "Tip: Ensure the file is executable (chmod +x) or run with sudo/root.")
+        write_output("      " + Fore.RED + f"Permission denied when executing '{cmd[0]}'." + Style.RESET_ALL)
+        write_output("         " + "Tip: Ensure the file is executable (chmod +x) or run with sudo/root.")
     except Exception as e:
-        err(f"Unexpected problem while running the command: {e}")
-        warn("Tip: Re-run with --debug for additional diagnostics.")
+        write_output("      " + Fore.RED + f"Unexpected problem while running the command: {e}" + Style.RESET_ALL)
+        write_output("      " + Fore.YELLOW + "Tip: Re-run with --debug for additional diagnostics." + Style.RESET_ALL)
     return ""
 
 def run_testssl(args: list[str], desc: str) -> str:
@@ -530,56 +562,71 @@ def collect_targets_interactive():
 
 def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
     """
-    Scan a single target with real-time output.
-    Scans ports sequentially with thread-safe progress updates.
-    Output prints in real-time as scans progress concurrently.
+    Scan a single target and capture all output.
+    Scans ports sequentially with simple progress updates.
+    Returns captured output for organized display at the end.
     """
+    from io import StringIO
+
     # Resolve target
     host = strip_proto(target)
     try:
         tgt = host if is_ip(host) else resolve(host)
     except Exception as e:
-        with output_lock:
-            print(f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n")
-        return
+        return f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n"
 
     # Expand ports
     try:
         port_list = expand(port_spec)
     except Exception as e:
-        with output_lock:
-            print(f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n")
-        return
+        return f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
 
-    # Thread-safe status update
+    # Initial progress update
     with output_lock:
-        print(f"\n{Fore.CYAN}{'=' * 72}")
-        print(f"[Target {target_id}/{total_targets}] Starting scan of {tgt} ({len(port_list)} ports)")
-        print(f"{'=' * 72}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Starting ({len(port_list)} ports){Style.RESET_ALL}")
 
     # Build the scanner
     sc = Scanner(tgt, args)
 
-    # Scan each port SEQUENTIALLY (like original code)
-    for idx, p in enumerate(port_list, 1):
-        try:
-            with output_lock:
-                print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
+    # Set up thread-local output capture
+    output_buffer = StringIO()
+    _thread_local.output_file = output_buffer
 
-            # Perform the scan (output prints in real-time)
-            scan_port(sc, p)
-            time.sleep(PACE)
+    output_buffer.write(f"\n{Fore.CYAN}{'=' * 72}\n")
+    output_buffer.write(f"Target {target_id}/{total_targets}: {tgt}   Ports: {port_spec}\n")
+    output_buffer.write(f"{'=' * 72}{Style.RESET_ALL}\n\n")
 
-        except Exception as e:
-            with output_lock:
-                banner(Fore.RED, f"Port {p} — unexpected error")
-                err(f"Something went wrong while scanning port {p}: {e}")
+    try:
+        # Scan each port SEQUENTIALLY
+        for idx, p in enumerate(port_list, 1):
+            try:
+                # Progress update (brief)
+                with output_lock:
+                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
 
-    # Final completion message
-    with output_lock:
-        print(f"\n{Fore.GREEN}{'=' * 72}")
-        print(f"[Target {target_id}/{total_targets}] ✓ COMPLETED: {tgt}")
-        print(f"{'=' * 72}{Style.RESET_ALL}\n")
+                # Perform the scan (output will be captured via thread-local)
+                scan_port(sc, p)
+                time.sleep(PACE)
+
+            except Exception as e:
+                output_buffer.write(f"\n{Fore.RED}Port {p} error: {e}{Style.RESET_ALL}\n")
+
+        output_buffer.write(f"\n{Fore.GREEN}{'=' * 72}\n")
+        output_buffer.write(f"COMPLETED: {tgt}\n")
+        output_buffer.write(f"{'=' * 72}{Style.RESET_ALL}\n\n")
+
+        # Final completion message
+        with output_lock:
+            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Complete ✓{Style.RESET_ALL}")
+
+        return output_buffer.getvalue()
+
+    except Exception as e:
+        return f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n"
+    finally:
+        # Clean up thread-local output file
+        if hasattr(_thread_local, 'output_file'):
+            delattr(_thread_local, 'output_file')
 
 def run_interactive_mode(args):
     """
@@ -612,6 +659,7 @@ def run_interactive_mode(args):
     # Run scans concurrently
     output_lock = Lock()
     total_targets = len(targets)
+    results = {}  # Store results in order
 
     print(f"\n{Fore.CYAN}{'=' * 72}")
     print(f"STARTING CONCURRENT SCANS - Live Progress")
@@ -619,18 +667,27 @@ def run_interactive_mode(args):
 
     with ThreadPoolExecutor(max_workers=total_targets) as executor:
         # Submit all tasks with target IDs
-        futures = [
-            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets)
+        future_to_idx = {
+            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets): idx
             for idx, (tgt, ports) in enumerate(targets)
-        ]
+        }
 
-        # Wait for all scans to complete
-        for future in as_completed(futures):
+        # Wait for all scans to complete and collect results
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
             try:
-                future.result()
+                result = future.result()
+                results[idx] = result
             except Exception as e:
-                with output_lock:
-                    print(f"{Fore.RED}✗ Target encountered an error: {e}{Style.RESET_ALL}")
+                results[idx] = f"\n{Fore.RED}[ERROR] Target #{idx + 1} failed: {e}{Style.RESET_ALL}\n"
+
+    # Display all results organized by input order
+    print(f"\n\n{Fore.CYAN}{'=' * 72}")
+    print("SCAN RESULTS (in order of input)")
+    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+    for idx in sorted(results.keys()):
+        print(results[idx])
 
     banner(Fore.GREEN, "ALL SCANS COMPLETE")
 
