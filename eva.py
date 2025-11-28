@@ -524,10 +524,11 @@ def collect_targets_interactive():
 
     return targets
 
-def scan_target(target: str, port_spec: str, args, output_lock: Lock):
+def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
     """
     Scan a single target and return the results as a string.
     Uses output capturing to prevent interleaved output from concurrent scans.
+    Provides real-time progress updates via thread-safe printing.
     """
     # Capture all output for this target
     import sys
@@ -546,6 +547,10 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock):
     except Exception as e:
         return f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
 
+    # Thread-safe status update
+    with output_lock:
+        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+
     # Build the scanner
     sc = Scanner(tgt, args)
 
@@ -562,9 +567,15 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock):
     try:
         sys.stdout = captured_output
 
-        # Scan each port
-        for p in port_list:
+        # Scan each port with progress updates
+        for idx, p in enumerate(port_list, 1):
             try:
+                # Progress update (thread-safe)
+                sys.stdout = old_stdout
+                with output_lock:
+                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
+                sys.stdout = captured_output
+
                 scan_port(sc, p)
                 time.sleep(PACE)
             except Exception as e:
@@ -579,9 +590,15 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock):
         output_parts.append(f"COMPLETED: {tgt}")
         output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
 
+        # Final completion message
+        with output_lock:
+            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed scan of {tgt}{Style.RESET_ALL}")
+
     except Exception as e:
         sys.stdout = old_stdout
         output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
+        with output_lock:
+            print(f"{Fore.RED}[Target {target_id}/{total_targets}] ✗ Failed: {tgt} - {e}{Style.RESET_ALL}")
 
     return "\n".join(output_parts)
 
@@ -616,13 +633,16 @@ def run_interactive_mode(args):
     # Run scans concurrently
     output_lock = Lock()
     results = {}  # Store results with original order
+    total_targets = len(targets)
 
-    print(f"\n{Fore.YELLOW}Scanning... (this may take a while){Style.RESET_ALL}\n")
+    print(f"\n{Fore.CYAN}{'=' * 72}")
+    print(f"STARTING CONCURRENT SCANS - Live Progress")
+    print(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-    with ThreadPoolExecutor(max_workers=len(targets)) as executor:
-        # Submit all tasks
+    with ThreadPoolExecutor(max_workers=total_targets) as executor:
+        # Submit all tasks with target IDs
         future_to_idx = {
-            executor.submit(scan_target, tgt, ports, args, output_lock): idx
+            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets): idx
             for idx, (tgt, ports) in enumerate(targets)
         }
 
@@ -632,11 +652,10 @@ def run_interactive_mode(args):
             try:
                 result = future.result()
                 results[idx] = result
-                # Show progress
-                completed = len([r for r in results.values() if r])
-                print(f"{Fore.GREEN}✓ Completed {completed}/{len(targets)} targets{Style.RESET_ALL}")
             except Exception as e:
                 results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
+                with output_lock:
+                    print(f"{Fore.RED}✗ Target {idx + 1}/{total_targets} encountered an error{Style.RESET_ALL}")
 
     # Display results in order
     print(f"\n\n{Fore.CYAN}{'=' * 72}")
