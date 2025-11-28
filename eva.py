@@ -23,7 +23,7 @@ Highlights
   and print robots.txt contents, opening it too if present.
 • SNMP: still runs even if netcat reports closed; nmap SNMP + snmp-check (public/private).
 • IKE: only port 500 runs the ike-scan trilogy; port 4500 stays generic.
-• testssl runs non-interactively with timeout to prevent hangs on non-TLS servers.
+• testssl runs non-interactively (--warnings batch) and exits immediately on errors.
 
 Requirements (Kali/Debian)
 --------------------------
@@ -68,7 +68,6 @@ SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇',
 
 # ───────── constants / tuning
 CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts
-TESTSSL_TOUT = 300                      # testssl timeout (5 minutes)
 PACE = 0.3                              # pause between ports to avoid FW throttling
 VERIFY_SSL = False
 
@@ -269,15 +268,15 @@ def run_live(cmd, desc, timeout=CMD_TOUT, silent=False, output_file=None) -> str
 def run_testssl(args: list[str], desc: str) -> str:
     """
     Wrapper around testssl so the scan never crashes nor prints noisy errors
-    if the binary is not present. Includes timeout to prevent hangs on non-TLS servers.
+    if the binary is not present. Runs non-interactively and exits on errors.
     """
     if TESTSSL_BIN is None:
         warn("Skipping testssl: binary not found on this system.")
         return ""
-    # Add flags to prevent interactive prompts and errors
     # --warnings batch: doesn't continue when a testing error is encountered (like no TLS)
+    # This makes testssl exit immediately on errors, so no timeout needed
     full_cmd = [TESTSSL_BIN, "--warnings", "batch", *args]
-    return run_live(full_cmd, desc, timeout=TESTSSL_TOUT)
+    return run_live(full_cmd, desc, timeout=None)
 
 # ───────── helpers (net/web)
 def nc_probe(host, port):
