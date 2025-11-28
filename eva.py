@@ -5,13 +5,17 @@
 #  Date   :  2025-11-28
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.4 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.4 — Parallel network scanner with live output and real-time progress.
 
 Highlights
 ----------
 • Human-friendly errors and guidance (no log files, no stack traces by default).
 • Live, colorized streaming of command output with clear section headers.
-• Interactive mode (--interactive or -i): scan multiple IPs and ports concurrently with organized output.
+• Interactive mode (--interactive or -i): scan multiple IPs and ports fully concurrently.
+  - Each IP scans in parallel (separate threads)
+  - Each port per IP also scans in parallel (nested threads)
+  - Massive speedup for multi-target, multi-port scans
+  - Real-time progress updates showing which IP:port combinations are active
 • Fast-path TLS: if the port number contains "443" anywhere (e.g., 443, 1443, 4433, 10443),
   run testssl immediately and skip nmap for speed.
 • Smarter TLS trigger in generic flow (uses THIS port's service line only; skips reverse-ssl, IKE).
@@ -524,16 +528,46 @@ def collect_targets_interactive():
 
     return targets
 
-def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
+def scan_single_port(sc: Scanner, port: int, args, output_lock: Lock, target_id: int, total_targets: int, port_idx: int, total_ports: int, tgt: str):
     """
-    Scan a single target and return the results as a string.
-    Uses output capturing to prevent interleaved output from concurrent scans.
-    Provides real-time progress updates via thread-safe printing.
+    Scan a single port and return the captured output.
+    This function runs in its own thread for parallel port scanning.
     """
-    # Capture all output for this target
     import sys
     from io import StringIO
 
+    # Thread-safe progress update
+    with output_lock:
+        print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt}:{port} → Starting ({port_idx}/{total_ports}){Style.RESET_ALL}")
+
+    # Capture output for this port
+    old_stdout = sys.stdout
+    captured_output = StringIO()
+
+    try:
+        sys.stdout = captured_output
+        scan_port(sc, port)
+        sys.stdout = old_stdout
+
+        # Completion update
+        with output_lock:
+            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt}:{port} → Complete ({port_idx}/{total_ports}){Style.RESET_ALL}")
+
+        return captured_output.getvalue()
+
+    except Exception as e:
+        sys.stdout = old_stdout
+        error_msg = f"\n{Fore.RED}[ERROR] Port {port} scan failed: {e}{Style.RESET_ALL}\n"
+        with output_lock:
+            print(f"{Fore.RED}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt}:{port} → Failed ({port_idx}/{total_ports}){Style.RESET_ALL}")
+        return error_msg
+
+def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
+    """
+    Scan a single target and return the results as a string.
+    Uses concurrent threads to scan all ports in parallel.
+    Provides real-time progress updates via thread-safe printing.
+    """
     # Resolve target
     host = strip_proto(target)
     try:
@@ -549,56 +583,46 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
 
     # Thread-safe status update
     with output_lock:
-        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting parallel scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
 
     # Build the scanner
     sc = Scanner(tgt, args)
 
-    # Capture output
+    # Scan all ports concurrently
+    port_results = {}
+
+    with ThreadPoolExecutor(max_workers=len(port_list)) as port_executor:
+        # Submit all port scans in parallel
+        future_to_port = {
+            port_executor.submit(scan_single_port, sc, p, args, output_lock, target_id, total_targets, idx, len(port_list), tgt): (idx, p)
+            for idx, p in enumerate(port_list, 1)
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_port):
+            idx, port = future_to_port[future]
+            try:
+                port_results[idx] = future.result()
+            except Exception as e:
+                port_results[idx] = f"\n{Fore.RED}[ERROR] Port {port} failed: {e}{Style.RESET_ALL}\n"
+
+    # Build final output in port order
     output_parts = []
     output_parts.append(f"\n{Fore.CYAN}{'=' * 72}")
     output_parts.append(f"Target: {tgt}   Ports: {port_spec}")
     output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-    # Redirect stdout temporarily
-    old_stdout = sys.stdout
-    captured_output = StringIO()
+    # Combine port results in order
+    for idx in sorted(port_results.keys()):
+        output_parts.append(port_results[idx])
 
-    try:
-        sys.stdout = captured_output
+    output_parts.append(f"\n{Fore.GREEN}{'=' * 72}")
+    output_parts.append(f"COMPLETED: {tgt}")
+    output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-        # Scan each port with progress updates
-        for idx, p in enumerate(port_list, 1):
-            try:
-                # Progress update (thread-safe)
-                sys.stdout = old_stdout
-                with output_lock:
-                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
-                sys.stdout = captured_output
-
-                scan_port(sc, p)
-                time.sleep(PACE)
-            except Exception as e:
-                banner(Fore.RED, f"Port {p} — unexpected error")
-                err(f"Something went wrong while scanning port {p}: {e}")
-
-        # Restore stdout and get captured content
-        sys.stdout = old_stdout
-        output_parts.append(captured_output.getvalue())
-
-        output_parts.append(f"\n{Fore.GREEN}{'=' * 72}")
-        output_parts.append(f"COMPLETED: {tgt}")
-        output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
-
-        # Final completion message
-        with output_lock:
-            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed scan of {tgt}{Style.RESET_ALL}")
-
-    except Exception as e:
-        sys.stdout = old_stdout
-        output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
-        with output_lock:
-            print(f"{Fore.RED}[Target {target_id}/{total_targets}] ✗ Failed: {tgt} - {e}{Style.RESET_ALL}")
+    # Final completion message
+    with output_lock:
+        print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed all ports for {tgt}{Style.RESET_ALL}")
 
     return "\n".join(output_parts)
 
