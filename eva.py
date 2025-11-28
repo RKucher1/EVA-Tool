@@ -591,17 +591,19 @@ class ProgressTracker:
     def render(self):
         """Render the current status display"""
         with self.lock:
-            # Clear previous lines
+            # Clear previous lines (move cursor up and clear each line)
             if self.lines_printed > 0:
-                for _ in range(self.lines_printed):
-                    print('\033[A\033[K', end='')  # Move up and clear line
+                # Move cursor up by the number of lines we printed
+                print(f'\033[{self.lines_printed}A', end='')
+                # Clear from cursor to end of screen
+                print('\033[J', end='')
 
             lines = []
             spinner = SPINNER_FRAMES[self.spinner_idx % len(SPINNER_FRAMES)]
             self.spinner_idx += 1
 
-            # Header
-            lines.append(f"\n{Fore.CYAN}{spinner} Scanning Progress:{Style.RESET_ALL}")
+            # Header (no leading newline)
+            lines.append(f"{Fore.CYAN}{spinner} Scanning Progress:{Style.RESET_ALL}")
             lines.append("")
 
             # Status for each target
@@ -631,9 +633,10 @@ class ProgressTracker:
 
                 lines.append(f"  {color}{msg}{Style.RESET_ALL}")
 
-            # Print all lines
-            output = "\n".join(lines)
-            print(output, flush=True)
+            # Print all lines with flush to ensure immediate display
+            for line in lines:
+                print(line)
+            sys.stdout.flush()
             self.lines_printed = len(lines)
 
     def stop(self):
@@ -642,9 +645,10 @@ class ProgressTracker:
         with self.lock:
             # Clear all status lines
             if self.lines_printed > 0:
-                for _ in range(self.lines_printed):
-                    print('\033[A\033[K', end='')
-                print()  # Add newline
+                # Move cursor up by the number of lines we printed
+                print(f'\033[{self.lines_printed}A', end='')
+                # Clear from cursor to end of screen
+                print('\033[J', end='', flush=True)
 
 def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int, progress_tracker=None):
     """
@@ -757,6 +761,9 @@ def run_interactive_mode(args):
 
     # Create progress tracker
     progress_tracker = ProgressTracker(total_targets)
+
+    # Print initial newline to create space for the progress display
+    print()
 
     # Render thread to update display
     def render_loop():
