@@ -274,10 +274,9 @@ def run_testssl(args: list[str], desc: str) -> str:
     if TESTSSL_BIN is None:
         warn("Skipping testssl: binary not found on this system.")
         return ""
-    # Add flags to suppress warnings and make non-interactive
-    # --warnings=off: suppress interactive prompts when TLS not detected
-    # --batch: non-interactive mode
-    full_cmd = [TESTSSL_BIN, "--warnings=off", "--batch", *args]
+    # Add flags to prevent interactive prompts and errors
+    # --warnings batch: doesn't continue when a testing error is encountered (like no TLS)
+    full_cmd = [TESTSSL_BIN, "--warnings", "batch", *args]
     return run_live(full_cmd, desc, timeout=TESTSSL_TOUT)
 
 # ───────── helpers (net/web)
