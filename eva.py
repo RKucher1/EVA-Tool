@@ -63,6 +63,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import threading
 _thread_local = threading.local()
 
+# Spinner animation frames
+SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
 # ───────── constants / tuning
 CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts (NOT used for testssl)
 PACE = 0.3                              # pause between ports to avoid FW throttling
@@ -560,7 +563,86 @@ def collect_targets_interactive():
 
     return targets
 
-def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
+class ProgressTracker:
+    """Live progress tracker with dynamic updating display"""
+    def __init__(self, total_targets):
+        self.total_targets = total_targets
+        self.statuses = {}  # target_id -> {"ip": str, "status": str, "port": int, "current": int, "total": int}
+        self.lock = Lock()
+        self.spinner_idx = 0
+        self.lines_printed = 0
+        self.active = True
+
+    def update(self, target_id, ip, status, port=None, current=0, total=0):
+        """Update status for a target"""
+        with self.lock:
+            self.statuses[target_id] = {
+                "ip": ip,
+                "status": status,
+                "port": port,
+                "current": current,
+                "total": total
+            }
+
+    def render(self):
+        """Render the current status display"""
+        with self.lock:
+            # Clear previous lines
+            if self.lines_printed > 0:
+                for _ in range(self.lines_printed):
+                    print('\033[A\033[K', end='')  # Move up and clear line
+
+            lines = []
+            spinner = SPINNER_FRAMES[self.spinner_idx % len(SPINNER_FRAMES)]
+            self.spinner_idx += 1
+
+            # Header
+            lines.append(f"\n{Fore.CYAN}{spinner} Scanning Progress:{Style.RESET_ALL}")
+            lines.append("")
+
+            # Status for each target
+            for target_id in sorted(self.statuses.keys()):
+                s = self.statuses[target_id]
+                ip = s["ip"]
+                status = s["status"]
+                port = s["port"]
+                current = s["current"]
+                total = s["total"]
+
+                if status == "starting":
+                    color = Fore.CYAN
+                    msg = f"[{target_id}/{self.total_targets}] {ip} → Starting ({total} ports)"
+                elif status == "scanning":
+                    color = Fore.YELLOW
+                    msg = f"[{target_id}/{self.total_targets}] {ip}:{port} → Scanning ({current}/{total})"
+                elif status == "complete":
+                    color = Fore.GREEN
+                    msg = f"[{target_id}/{self.total_targets}] {ip} → Complete ✓"
+                elif status == "error":
+                    color = Fore.RED
+                    msg = f"[{target_id}/{self.total_targets}] {ip} → Error ✗"
+                else:
+                    color = Fore.WHITE
+                    msg = f"[{target_id}/{self.total_targets}] {ip} → {status}"
+
+                lines.append(f"  {color}{msg}{Style.RESET_ALL}")
+
+            # Print all lines
+            output = "\n".join(lines)
+            print(output, flush=True)
+            self.lines_printed = len(lines)
+
+    def stop(self):
+        """Stop the tracker and clear the display"""
+        self.active = False
+        with self.lock:
+            # Clear all status lines
+            if self.lines_printed > 0:
+                for _ in range(self.lines_printed):
+                    print('\033[A\033[K', end='')
+                print()  # Add newline
+
+def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int, progress_tracker=None):
     """
     Scan a single target and capture all output.
     Scans ports sequentially with simple progress updates.
@@ -579,11 +661,13 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
     try:
         port_list = expand(port_spec)
     except Exception as e:
+        if progress_tracker:
+            progress_tracker.update(target_id, host, "error", total=0)
         return f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
 
     # Initial progress update
-    with output_lock:
-        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Starting ({len(port_list)} ports){Style.RESET_ALL}")
+    if progress_tracker:
+        progress_tracker.update(target_id, tgt, "starting", total=len(port_list))
 
     # Build the scanner
     sc = Scanner(tgt, args)
@@ -600,9 +684,9 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
         # Scan each port SEQUENTIALLY
         for idx, p in enumerate(port_list, 1):
             try:
-                # Progress update (brief)
-                with output_lock:
-                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
+                # Progress update
+                if progress_tracker:
+                    progress_tracker.update(target_id, tgt, "scanning", port=p, current=idx, total=len(port_list))
 
                 # Perform the scan (output will be captured via thread-local)
                 scan_port(sc, p)
@@ -616,12 +700,14 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
         output_buffer.write(f"{'=' * 72}{Style.RESET_ALL}\n\n")
 
         # Final completion message
-        with output_lock:
-            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Complete ✓{Style.RESET_ALL}")
+        if progress_tracker:
+            progress_tracker.update(target_id, tgt, "complete", total=len(port_list))
 
         return output_buffer.getvalue()
 
     except Exception as e:
+        if progress_tracker:
+            progress_tracker.update(target_id, tgt, "error", total=len(port_list))
         return f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n"
     finally:
         # Clean up thread-local output file
@@ -663,23 +749,40 @@ def run_interactive_mode(args):
 
     print(f"\n{Fore.CYAN}{'=' * 72}")
     print(f"STARTING CONCURRENT SCANS - Live Progress")
-    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+    print(f"{'=' * 72}{Style.RESET_ALL}")
 
-    with ThreadPoolExecutor(max_workers=total_targets) as executor:
-        # Submit all tasks with target IDs
-        future_to_idx = {
-            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets): idx
-            for idx, (tgt, ports) in enumerate(targets)
-        }
+    # Create progress tracker
+    progress_tracker = ProgressTracker(total_targets)
 
-        # Wait for all scans to complete and collect results
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                result = future.result()
-                results[idx] = result
-            except Exception as e:
-                results[idx] = f"\n{Fore.RED}[ERROR] Target #{idx + 1} failed: {e}{Style.RESET_ALL}\n"
+    # Render thread to update display
+    def render_loop():
+        while progress_tracker.active:
+            progress_tracker.render()
+            time.sleep(0.1)  # Update 10 times per second
+
+    render_thread = threading.Thread(target=render_loop, daemon=True)
+    render_thread.start()
+
+    try:
+        with ThreadPoolExecutor(max_workers=total_targets) as executor:
+            # Submit all tasks with target IDs
+            future_to_idx = {
+                executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets, progress_tracker): idx
+                for idx, (tgt, ports) in enumerate(targets)
+            }
+
+            # Wait for all scans to complete and collect results
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result()
+                    results[idx] = result
+                except Exception as e:
+                    results[idx] = f"\n{Fore.RED}[ERROR] Target #{idx + 1} failed: {e}{Style.RESET_ALL}\n"
+    finally:
+        # Stop the progress tracker
+        progress_tracker.stop()
+        time.sleep(0.2)  # Let render thread finish
 
     # Display all results organized by input order
     print(f"\n\n{Fore.CYAN}{'=' * 72}")
