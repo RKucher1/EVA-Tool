@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.3
-#  Date   :  2025-08-11
+#  Version:  8.4
+#  Date   :  2025-11-28
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.3 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.4 — Sequential, banner-style network scanner with live output.
 
 Highlights
 ----------
 • Human-friendly errors and guidance (no log files, no stack traces by default).
 • Live, colorized streaming of command output with clear section headers.
+• Interactive mode (--interactive or -i): scan multiple IPs and ports concurrently with organized output.
 • Fast-path TLS: if the port number contains "443" anywhere (e.g., 443, 1443, 4433, 10443),
   run testssl immediately and skip nmap for speed.
 • Smarter TLS trigger in generic flow (uses THIS port's service line only; skips reverse-ssl, IKE).
@@ -38,8 +39,11 @@ import subprocess
 import sys
 import time
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 from http import HTTPStatus
+from io import StringIO
+from threading import Lock
 
 # ───────── 3rd-party
 import requests
@@ -443,19 +447,239 @@ def expand(spec: str):
 
 def cli():
     ap = argparse.ArgumentParser(description="EVA — Banner-style live-output scanner")
-    ap.add_argument("--target", required=True, help="IP or hostname")
-    ap.add_argument("--ports", required=True, help="Comma list and/or ranges (e.g., 80,443,1-1024)")
+    ap.add_argument("--target", help="IP or hostname")
+    ap.add_argument("--ports", help="Comma list and/or ranges (e.g., 80,443,1-1024)")
+    ap.add_argument("--interactive", "-i", action="store_true",
+                    help="Interactive mode: input multiple IPs and ports, scan concurrently")
     ap.add_argument("--no-ssl", action="store_true", help="Skip all TLS/testssl scans")
     ap.add_argument("--no-web", action="store_true", help="Skip curl/HTTP and Firefox actions")
     ap.add_argument("--no-firefox", action="store_true", help="Do not launch Firefox even if reachable")
     ap.add_argument("--debug", action="store_true", help="Verbose internal logging to stdout")
-    return ap.parse_args()
+    args = ap.parse_args()
+
+    # Validation
+    if not args.interactive and (not args.target or not args.ports):
+        ap.error("--target and --ports are required unless using --interactive mode")
+    if args.interactive and (args.target or args.ports):
+        ap.error("--interactive mode does not use --target or --ports arguments")
+
+    return args
+
+def collect_targets_interactive():
+    """
+    Interactively collect multiple targets and their ports from user input.
+    Returns a list of tuples: [(target, port_spec), ...]
+    """
+    targets = []
+    print(Fore.CYAN + "\n" + "=" * 72)
+    print("EVA Interactive Mode — Enter targets and ports")
+    print("=" * 72 + Style.RESET_ALL)
+    print(Fore.YELLOW + "\nInstructions:")
+    print("  • Enter IP or hostname for each target")
+    print("  • Enter ports as comma-separated list and/or ranges (e.g., 80,443,1-1024)")
+    print("  • Type 'done' when finished adding targets")
+    print("  • Type 'quit' to cancel" + Style.RESET_ALL)
+
+    target_num = 1
+    while True:
+        print(f"\n{Fore.CYAN}[Target #{target_num}]{Style.RESET_ALL}")
+
+        # Get IP/hostname
+        target_input = input(f"  Enter IP or hostname (or 'done' to start scan): ").strip()
+
+        if target_input.lower() == 'done':
+            if not targets:
+                print(Fore.RED + "  No targets entered. Please enter at least one target." + Style.RESET_ALL)
+                continue
+            break
+
+        if target_input.lower() == 'quit':
+            print(Fore.YELLOW + "\nCancelled by user." + Style.RESET_ALL)
+            sys.exit(0)
+
+        if not target_input:
+            print(Fore.RED + "  Target cannot be empty. Try again." + Style.RESET_ALL)
+            continue
+
+        # Get ports
+        ports_input = input(f"  Enter ports for {target_input}: ").strip()
+
+        if not ports_input:
+            print(Fore.RED + "  Ports cannot be empty. Try again." + Style.RESET_ALL)
+            continue
+
+        # Validate ports by attempting to expand
+        try:
+            port_list = expand(ports_input)
+            if not port_list:
+                print(Fore.RED + "  No valid ports found. Try again." + Style.RESET_ALL)
+                continue
+        except Exception as e:
+            print(Fore.RED + f"  Invalid port specification: {e}" + Style.RESET_ALL)
+            continue
+
+        targets.append((target_input, ports_input))
+        print(Fore.GREEN + f"  ✓ Added {target_input} with {len(port_list)} port(s)" + Style.RESET_ALL)
+        target_num += 1
+
+    return targets
+
+def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
+    """
+    Scan a single target and return the results as a string.
+    Uses output capturing to prevent interleaved output from concurrent scans.
+    Provides real-time progress updates via thread-safe printing.
+    """
+    # Capture all output for this target
+    import sys
+    from io import StringIO
+
+    # Resolve target
+    host = strip_proto(target)
+    try:
+        tgt = host if is_ip(host) else resolve(host)
+    except Exception as e:
+        return f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n"
+
+    # Expand ports
+    try:
+        port_list = expand(port_spec)
+    except Exception as e:
+        return f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
+
+    # Thread-safe status update
+    with output_lock:
+        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+
+    # Build the scanner
+    sc = Scanner(tgt, args)
+
+    # Capture output
+    output_parts = []
+    output_parts.append(f"\n{Fore.CYAN}{'=' * 72}")
+    output_parts.append(f"Target: {tgt}   Ports: {port_spec}")
+    output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+    # Redirect stdout temporarily
+    old_stdout = sys.stdout
+    captured_output = StringIO()
+
+    try:
+        sys.stdout = captured_output
+
+        # Scan each port with progress updates
+        for idx, p in enumerate(port_list, 1):
+            try:
+                # Progress update (thread-safe)
+                sys.stdout = old_stdout
+                with output_lock:
+                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
+                sys.stdout = captured_output
+
+                scan_port(sc, p)
+                time.sleep(PACE)
+            except Exception as e:
+                banner(Fore.RED, f"Port {p} — unexpected error")
+                err(f"Something went wrong while scanning port {p}: {e}")
+
+        # Restore stdout and get captured content
+        sys.stdout = old_stdout
+        output_parts.append(captured_output.getvalue())
+
+        output_parts.append(f"\n{Fore.GREEN}{'=' * 72}")
+        output_parts.append(f"COMPLETED: {tgt}")
+        output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+        # Final completion message
+        with output_lock:
+            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed scan of {tgt}{Style.RESET_ALL}")
+
+    except Exception as e:
+        sys.stdout = old_stdout
+        output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
+        with output_lock:
+            print(f"{Fore.RED}[Target {target_id}/{total_targets}] ✗ Failed: {tgt} - {e}{Style.RESET_ALL}")
+
+    return "\n".join(output_parts)
+
+def run_interactive_mode(args):
+    """
+    Run EVA in interactive mode: collect multiple targets, scan concurrently, display organized results.
+    """
+    # Collect targets
+    targets = collect_targets_interactive()
+
+    if not targets:
+        print(Fore.RED + "\nNo targets to scan. Exiting." + Style.RESET_ALL)
+        sys.exit(0)
+
+    # Show summary
+    print(f"\n{Fore.CYAN}{'=' * 72}")
+    print(f"Starting concurrent scan of {len(targets)} target(s)")
+    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+    for idx, (tgt, ports) in enumerate(targets, 1):
+        print(f"  {idx}. {tgt} → {ports}")
+
+    # Check dependencies for all ports
+    all_ports = set()
+    for _, port_spec in targets:
+        try:
+            all_ports.update(expand(port_spec))
+        except:
+            pass
+    check_dependencies(sorted(all_ports), args)
+
+    # Run scans concurrently
+    output_lock = Lock()
+    results = {}  # Store results with original order
+    total_targets = len(targets)
+
+    print(f"\n{Fore.CYAN}{'=' * 72}")
+    print(f"STARTING CONCURRENT SCANS - Live Progress")
+    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+    with ThreadPoolExecutor(max_workers=total_targets) as executor:
+        # Submit all tasks with target IDs
+        future_to_idx = {
+            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets): idx
+            for idx, (tgt, ports) in enumerate(targets)
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                result = future.result()
+                results[idx] = result
+            except Exception as e:
+                results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
+                with output_lock:
+                    print(f"{Fore.RED}✗ Target {idx + 1}/{total_targets} encountered an error{Style.RESET_ALL}")
+
+    # Display results in order
+    print(f"\n\n{Fore.CYAN}{'=' * 72}")
+    print("SCAN RESULTS (in order of input)")
+    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+    for idx in sorted(results.keys()):
+        print(results[idx])
+
+    banner(Fore.GREEN, "ALL SCANS COMPLETE")
 
 def main():
     require_root()
     args = cli()
     setup_log(args.debug)
 
+    signal.signal(signal.SIGINT, lambda *_: sys.exit("\nInterrupted by user."))
+
+    # Handle interactive mode
+    if args.interactive:
+        run_interactive_mode(args)
+        return
+
+    # Normal mode (single target)
     host = strip_proto(args.target)
     try:
         tgt = host if is_ip(host) else resolve(host)
@@ -471,7 +695,6 @@ def main():
     check_dependencies(port_list, args)
 
     sc = Scanner(tgt, args)
-    signal.signal(signal.SIGINT, lambda *_: sys.exit("\nInterrupted by user."))
 
     for p in tqdm(port_list, desc="Ports", unit="port", ncols=80, colour="cyan"):
         try:
