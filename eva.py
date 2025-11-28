@@ -530,82 +530,56 @@ def collect_targets_interactive():
 
 def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
     """
-    Scan a single target and return the results as a string.
-    Scans ports sequentially (like original code) but captures output for organized display.
-    Provides real-time progress updates via thread-safe printing.
+    Scan a single target with real-time output.
+    Scans ports sequentially with thread-safe progress updates.
+    Output prints in real-time as scans progress concurrently.
     """
-    import sys
-    from io import StringIO
-
     # Resolve target
     host = strip_proto(target)
     try:
         tgt = host if is_ip(host) else resolve(host)
     except Exception as e:
-        return f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n"
+        with output_lock:
+            print(f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n")
+        return
 
     # Expand ports
     try:
         port_list = expand(port_spec)
     except Exception as e:
-        return f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
+        with output_lock:
+            print(f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n")
+        return
 
     # Thread-safe status update
     with output_lock:
-        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+        print(f"\n{Fore.CYAN}{'=' * 72}")
+        print(f"[Target {target_id}/{total_targets}] Starting scan of {tgt} ({len(port_list)} ports)")
+        print(f"{'=' * 72}{Style.RESET_ALL}")
 
     # Build the scanner
     sc = Scanner(tgt, args)
 
-    # Capture all output for this target
-    output_parts = []
-    output_parts.append(f"\n{Fore.CYAN}{'=' * 72}")
-    output_parts.append(f"Target: {tgt}   Ports: {port_spec}")
-    output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
+    # Scan each port SEQUENTIALLY (like original code)
+    for idx, p in enumerate(port_list, 1):
+        try:
+            with output_lock:
+                print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
 
-    # Redirect stdout to capture detailed output
-    old_stdout = sys.stdout
-    captured_output = StringIO()
+            # Perform the scan (output prints in real-time)
+            scan_port(sc, p)
+            time.sleep(PACE)
 
-    try:
-        sys.stdout = captured_output
-
-        # Scan each port SEQUENTIALLY (like original code)
-        for idx, p in enumerate(port_list, 1):
-            try:
-                # Thread-safe progress update (restore stdout temporarily)
-                sys.stdout = old_stdout
-                with output_lock:
-                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
-                sys.stdout = captured_output
-
-                # Perform the scan (detailed output captured)
-                scan_port(sc, p)
-                time.sleep(PACE)
-
-            except Exception as e:
+        except Exception as e:
+            with output_lock:
                 banner(Fore.RED, f"Port {p} — unexpected error")
                 err(f"Something went wrong while scanning port {p}: {e}")
 
-        # Restore stdout and get captured content
-        sys.stdout = old_stdout
-        output_parts.append(captured_output.getvalue())
-
-        output_parts.append(f"\n{Fore.GREEN}{'=' * 72}")
-        output_parts.append(f"COMPLETED: {tgt}")
-        output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
-
-        # Final completion message
-        with output_lock:
-            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed scan of {tgt}{Style.RESET_ALL}")
-
-    except Exception as e:
-        sys.stdout = old_stdout
-        output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
-        with output_lock:
-            print(f"{Fore.RED}[Target {target_id}/{total_targets}] ✗ Failed: {tgt} - {e}{Style.RESET_ALL}")
-
-    return "\n".join(output_parts)
+    # Final completion message
+    with output_lock:
+        print(f"\n{Fore.GREEN}{'=' * 72}")
+        print(f"[Target {target_id}/{total_targets}] ✓ COMPLETED: {tgt}")
+        print(f"{'=' * 72}{Style.RESET_ALL}\n")
 
 def run_interactive_mode(args):
     """
@@ -637,7 +611,6 @@ def run_interactive_mode(args):
 
     # Run scans concurrently
     output_lock = Lock()
-    results = {}  # Store results with original order
     total_targets = len(targets)
 
     print(f"\n{Fore.CYAN}{'=' * 72}")
@@ -646,29 +619,18 @@ def run_interactive_mode(args):
 
     with ThreadPoolExecutor(max_workers=total_targets) as executor:
         # Submit all tasks with target IDs
-        future_to_idx = {
-            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets): idx
+        futures = [
+            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets)
             for idx, (tgt, ports) in enumerate(targets)
-        }
+        ]
 
-        # Collect results as they complete
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
+        # Wait for all scans to complete
+        for future in as_completed(futures):
             try:
-                result = future.result()
-                results[idx] = result
+                future.result()
             except Exception as e:
-                results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
                 with output_lock:
-                    print(f"{Fore.RED}✗ Target {idx + 1}/{total_targets} encountered an error{Style.RESET_ALL}")
-
-    # Display results in order
-    print(f"\n\n{Fore.CYAN}{'=' * 72}")
-    print("SCAN RESULTS (in order of input)")
-    print(f"{'=' * 72}{Style.RESET_ALL}\n")
-
-    for idx in sorted(results.keys()):
-        print(results[idx])
+                    print(f"{Fore.RED}✗ Target encountered an error: {e}{Style.RESET_ALL}")
 
     banner(Fore.GREEN, "ALL SCANS COMPLETE")
 
