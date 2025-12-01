@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.8
+#  Version:  8.9
 #  Date   :  2025-12-01
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.8 — Concurrent, banner-style network scanner with live output.
+EVA Scanner v8.9 — Concurrent, banner-style network scanner with live output.
 
 Highlights
 ----------
@@ -533,29 +533,46 @@ def collect_targets_interactive():
 
 def scan_single_port(sc: Scanner, port: int, target_id: int, total_targets: int, port_num: int, total_ports: int, output_lock: Lock):
     """
-    Scan a single port and return the output as a string.
-    Designed for concurrent execution with silent operation.
+    Scan a single port and capture output.
+    Output is collected and returned for organized display.
     """
     from io import StringIO
     import sys
 
-    # Capture output for this port
-    old_stdout = sys.stdout
-    captured_output = StringIO()
+    # Capture output buffer
+    output_buffer = StringIO()
+
+    # Save original stdout
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
 
     try:
-        # Redirect stdout to capture (silent execution)
-        sys.stdout = captured_output
-        scan_port(sc, port)
-        sys.stdout = old_stdout
+        # Show progress update before starting
+        with output_lock:
+            print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] Port {port} ({port_num}/{total_ports})...{Style.RESET_ALL}")
 
-        return (port, captured_output.getvalue(), None)
+        # Temporarily redirect stdout/stderr to capture output
+        sys.stdout = output_buffer
+        sys.stderr = output_buffer
+
+        # Run the port scan
+        scan_port(sc, port)
+
+        # Restore stdout/stderr
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+
+        return (port, output_buffer.getvalue(), None)
+
     except Exception as e:
-        sys.stdout = old_stdout
+        # Restore stdout/stderr on error
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+
         error_detail = f"Port {port}: {type(e).__name__} - {e}"
         with output_lock:
             logging.warning(f"Target {target_id}, Port {port}: {e}")
-        return (port, captured_output.getvalue(), error_detail)
+        return (port, output_buffer.getvalue(), error_detail)
 
 def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
     """
@@ -603,7 +620,8 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
 
     # Thread-safe status update
     with output_lock:
-        print(f"\n{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Scanning {tgt} ({len(port_list)} ports: {', '.join(map(str, port_list))}){Style.RESET_ALL}")
+        print(f"\n{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting scan: {tgt}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Ports ({len(port_list)}): {', '.join(map(str, port_list))}{Style.RESET_ALL}")
 
     # Build the scanner
     sc = Scanner(tgt, args)
@@ -637,11 +655,7 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
                 for idx, port in enumerate(port_list, 1)
             }
 
-            # Collect results as they complete with clean progress updates
-            completed_count = 0
-            spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-            spinner_idx = 0
-
+            # Collect results as they complete
             for future in as_completed(future_to_port):
                 idx, port = future_to_port[future]
                 try:
@@ -650,35 +664,15 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
                     if error:
                         port_errors.append(error)
 
-                    completed_count += 1
-                    progress_pct = (completed_count / len(port_list)) * 100
-
-                    with output_lock:
-                        # Show clean progress with spinner
-                        spin = spinner[spinner_idx % len(spinner)]
-                        print(f"\r{Fore.YELLOW}{spin}{Style.RESET_ALL} {Fore.CYAN}[Target {target_id}/{total_targets}]{Style.RESET_ALL} {tgt} → {Fore.GREEN}{completed_count}/{len(port_list)} ports completed ({progress_pct:.0f}%){Style.RESET_ALL}", end='', flush=True)
-                        spinner_idx += 1
-
                 except KeyboardInterrupt:
-                    print()  # New line after progress
                     with output_lock:
-                        print(f"{Fore.RED}[Target {target_id}/{total_targets}] Interrupted by user{Style.RESET_ALL}")
+                        print(f"\n{Fore.RED}[Target {target_id}/{total_targets}] Interrupted by user{Style.RESET_ALL}")
                     raise
                 except Exception as e:
                     error_detail = f"Port {port}: {type(e).__name__} - {e}"
                     port_errors.append(error_detail)
-                    completed_count += 1
-                    progress_pct = (completed_count / len(port_list)) * 100
-
                     with output_lock:
                         logging.error(f"Target {target_id}, Port {port} future error: {e}")
-                        # Show clean progress with spinner
-                        spin = spinner[spinner_idx % len(spinner)]
-                        print(f"\r{Fore.YELLOW}{spin}{Style.RESET_ALL} {Fore.CYAN}[Target {target_id}/{total_targets}]{Style.RESET_ALL} {tgt} → {Fore.GREEN}{completed_count}/{len(port_list)} ports completed ({progress_pct:.0f}%){Style.RESET_ALL}", end='', flush=True)
-                        spinner_idx += 1
-
-            # Clear the progress line and print final status
-            print()
 
         # Append results in port order
         for idx in sorted(port_results.keys()):
