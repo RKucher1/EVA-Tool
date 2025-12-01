@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.6
+#  Version:  8.7
 #  Date   :  2025-12-01
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.6 — Concurrent, banner-style network scanner with live output.
+EVA Scanner v8.7 — Concurrent, banner-style network scanner with live output.
 
 Highlights
 ----------
@@ -538,26 +538,39 @@ def scan_single_port(sc: Scanner, port: int, target_id: int, total_targets: int,
     """
     from io import StringIO
     import sys
+    import time
+
+    start_time = time.time()
 
     # Capture output for this port
     old_stdout = sys.stdout
     captured_output = StringIO()
 
     try:
-        # Thread-safe progress update
+        # Thread-safe progress update - START
         with output_lock:
-            print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{sc.tgt} → Scanning port {port} ({port_num}/{total_ports}){Style.RESET_ALL}")
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"{Fore.YELLOW}[{timestamp}][Target {target_id}/{total_targets}] {Fore.WHITE}{sc.tgt} → STARTED port {port} ({port_num}/{total_ports}){Style.RESET_ALL}")
 
         # Redirect stdout to capture
         sys.stdout = captured_output
         scan_port(sc, port)
         sys.stdout = old_stdout
 
+        # Thread-safe progress update - COMPLETE
+        elapsed = time.time() - start_time
+        with output_lock:
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"{Fore.GREEN}[{timestamp}][Target {target_id}/{total_targets}] {Fore.WHITE}{sc.tgt} → COMPLETED port {port} in {elapsed:.1f}s{Style.RESET_ALL}")
+
         return (port, captured_output.getvalue(), None)
     except Exception as e:
         sys.stdout = old_stdout
         error_detail = f"Port {port}: {type(e).__name__} - {e}"
+        elapsed = time.time() - start_time
         with output_lock:
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"{Fore.RED}[{timestamp}][Target {target_id}/{total_targets}] {Fore.WHITE}{sc.tgt} → FAILED port {port} after {elapsed:.1f}s{Style.RESET_ALL}")
             logging.warning(f"Target {target_id}, Port {port}: {e}")
         return (port, captured_output.getvalue(), error_detail)
 
@@ -607,7 +620,8 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
 
     # Thread-safe status update
     with output_lock:
-        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting concurrent scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+        print(f"\n{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting concurrent scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Ports to scan: {', '.join(map(str, port_list))}{Style.RESET_ALL}")
 
     # Build the scanner
     sc = Scanner(tgt, args)
@@ -625,6 +639,9 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
         # Scan ports concurrently with a reasonable max workers limit
         max_workers = min(MAX_CONCURRENT_PORTS, len(port_list))
 
+        with output_lock:
+            print(f"{Fore.MAGENTA}[Target {target_id}/{total_targets}] {Fore.WHITE}Launching {max_workers} concurrent workers for {len(port_list)} ports...{Style.RESET_ALL}")
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all port scan tasks
             future_to_port = {
@@ -641,7 +658,11 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
                 for idx, port in enumerate(port_list, 1)
             }
 
+            with output_lock:
+                print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] {Fore.WHITE}All {len(port_list)} port scan tasks submitted and running concurrently!{Style.RESET_ALL}\n")
+
             # Collect results as they complete
+            completed_count = 0
             for future in as_completed(future_to_port):
                 idx, port = future_to_port[future]
                 try:
@@ -649,6 +670,12 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
                     port_results[idx] = output
                     if error:
                         port_errors.append(error)
+
+                    completed_count += 1
+                    with output_lock:
+                        progress_pct = (completed_count / len(port_list)) * 100
+                        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] Progress: {completed_count}/{len(port_list)} ports completed ({progress_pct:.0f}%){Style.RESET_ALL}")
+
                 except KeyboardInterrupt:
                     with output_lock:
                         print(f"{Fore.RED}[Target {target_id}/{total_targets}] Interrupted by user{Style.RESET_ALL}")
@@ -656,8 +683,11 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
                 except Exception as e:
                     error_detail = f"Port {port}: {type(e).__name__} - {e}"
                     port_errors.append(error_detail)
+                    completed_count += 1
                     with output_lock:
                         logging.error(f"Target {target_id}, Port {port} future error: {e}")
+                        progress_pct = (completed_count / len(port_list)) * 100
+                        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] Progress: {completed_count}/{len(port_list)} ports completed ({progress_pct:.0f}%){Style.RESET_ALL}")
 
         # Append results in port order
         for idx in sorted(port_results.keys()):
