@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.5
+#  Version:  8.6
 #  Date   :  2025-12-01
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.5 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.6 — Concurrent, banner-style network scanner with live output.
 
 Highlights
 ----------
 • Human-friendly errors and guidance (no log files, no stack traces by default).
 • Live, colorized streaming of command output with clear section headers.
-• Interactive mode (--interactive or -i): scan multiple IPs and ports in batches of 5, with concurrent processing and organized output.
+• Interactive mode (--interactive or -i): concurrent scanning with intelligent batching
+  - IPs processed in batches of 5 to prevent system/firewall overload
+  - Ports scanned concurrently (up to 10 at a time) for maximum speed
+  - Organized output with real-time progress tracking
 • Fast-path TLS: if the port number contains "443" anywhere (e.g., 443, 1443, 4433, 10443),
   run testssl immediately and skip nmap for speed.
 • Smarter TLS trigger in generic flow (uses THIS port's service line only; skips reverse-ssl, IKE).
@@ -57,8 +60,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ───────── constants / tuning
 CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts (NOT used for testssl)
-PACE = 0.3                              # pause between ports to avoid FW throttling
+PACE = 0.3                              # pause between ports (legacy, not used in concurrent mode)
 VERIFY_SSL = False
+
+# Concurrent scanning batch sizes (interactive mode)
+IP_BATCH_SIZE = 5                       # max IPs scanned concurrently per batch
+MAX_CONCURRENT_PORTS = 10               # max ports scanned concurrently per IP
 
 # Preferred testssl.sh, then CLI "testssl", otherwise graceful skip
 PREF = os.getenv("TESTSSL_PATH") or "/root/tools/testssl.sh/testssl.sh"
@@ -524,17 +531,44 @@ def collect_targets_interactive():
 
     return targets
 
+def scan_single_port(sc: Scanner, port: int, target_id: int, total_targets: int, port_num: int, total_ports: int, output_lock: Lock):
+    """
+    Scan a single port and return the output as a string.
+    Designed for concurrent execution.
+    """
+    from io import StringIO
+    import sys
+
+    # Capture output for this port
+    old_stdout = sys.stdout
+    captured_output = StringIO()
+
+    try:
+        # Thread-safe progress update
+        with output_lock:
+            print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{sc.tgt} → Scanning port {port} ({port_num}/{total_ports}){Style.RESET_ALL}")
+
+        # Redirect stdout to capture
+        sys.stdout = captured_output
+        scan_port(sc, port)
+        sys.stdout = old_stdout
+
+        return (port, captured_output.getvalue(), None)
+    except Exception as e:
+        sys.stdout = old_stdout
+        error_detail = f"Port {port}: {type(e).__name__} - {e}"
+        with output_lock:
+            logging.warning(f"Target {target_id}, Port {port}: {e}")
+        return (port, captured_output.getvalue(), error_detail)
+
 def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
     """
     Scan a single target and return the results as a string.
     Uses output capturing to prevent interleaved output from concurrent scans.
     Provides real-time progress updates via thread-safe printing.
     Enhanced error handling for robust batch processing.
+    Scans ports concurrently for faster execution.
     """
-    # Capture all output for this target
-    import sys
-    from io import StringIO
-
     # Resolve target
     host = strip_proto(target)
     try:
@@ -573,55 +607,61 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
 
     # Thread-safe status update
     with output_lock:
-        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting concurrent scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
 
     # Build the scanner
     sc = Scanner(tgt, args)
 
-    # Capture output
+    # Prepare output container
     output_parts = []
     output_parts.append(f"\n{Fore.CYAN}{'=' * 72}")
     output_parts.append(f"Target: {tgt}   Ports: {port_spec}")
     output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-    # Redirect stdout temporarily
-    old_stdout = sys.stdout
-    captured_output = StringIO()
     port_errors = []  # Track individual port errors
+    port_results = {}  # Store port results in order
 
     try:
-        sys.stdout = captured_output
+        # Scan ports concurrently with a reasonable max workers limit
+        max_workers = min(MAX_CONCURRENT_PORTS, len(port_list))
 
-        # Scan each port with progress updates
-        for idx, p in enumerate(port_list, 1):
-            try:
-                # Progress update (thread-safe)
-                sys.stdout = old_stdout
-                with output_lock:
-                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
-                sys.stdout = captured_output
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all port scan tasks
+            future_to_port = {
+                executor.submit(
+                    scan_single_port,
+                    sc,
+                    port,
+                    target_id,
+                    total_targets,
+                    idx,
+                    len(port_list),
+                    output_lock
+                ): (idx, port)
+                for idx, port in enumerate(port_list, 1)
+            }
 
-                scan_port(sc, p)
-                time.sleep(PACE)
-            except KeyboardInterrupt:
-                sys.stdout = old_stdout
-                with output_lock:
-                    print(f"{Fore.RED}[Target {target_id}/{total_targets}] Interrupted by user{Style.RESET_ALL}")
-                raise  # Re-raise to propagate interrupt
-            except Exception as e:
-                # Log port-specific error but continue scanning
-                error_detail = f"Port {p}: {type(e).__name__} - {e}"
-                port_errors.append(error_detail)
-                banner(Fore.RED, f"Port {p} — unexpected error")
-                err(f"Error scanning port {p}: {e}")
-                sys.stdout = old_stdout
-                with output_lock:
-                    logging.warning(f"Target {target_id}, Port {p}: {e}")
-                sys.stdout = captured_output
+            # Collect results as they complete
+            for future in as_completed(future_to_port):
+                idx, port = future_to_port[future]
+                try:
+                    port_num, output, error = future.result()
+                    port_results[idx] = output
+                    if error:
+                        port_errors.append(error)
+                except KeyboardInterrupt:
+                    with output_lock:
+                        print(f"{Fore.RED}[Target {target_id}/{total_targets}] Interrupted by user{Style.RESET_ALL}")
+                    raise
+                except Exception as e:
+                    error_detail = f"Port {port}: {type(e).__name__} - {e}"
+                    port_errors.append(error_detail)
+                    with output_lock:
+                        logging.error(f"Target {target_id}, Port {port} future error: {e}")
 
-        # Restore stdout and get captured content
-        sys.stdout = old_stdout
-        output_parts.append(captured_output.getvalue())
+        # Append results in port order
+        for idx in sorted(port_results.keys()):
+            output_parts.append(port_results[idx])
 
         # Add error summary if any ports failed
         if port_errors:
@@ -648,11 +688,9 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
             logging.info(f"Target {target_id} completed: {tgt} ({len(port_list)} ports, {len(port_errors)} errors)")
 
     except KeyboardInterrupt:
-        sys.stdout = old_stdout
         output_parts.append(f"\n{Fore.YELLOW}[INTERRUPTED] Scan interrupted for {tgt}{Style.RESET_ALL}\n")
         raise  # Propagate interrupt
     except Exception as e:
-        sys.stdout = old_stdout
         output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
         with output_lock:
             print(f"{Fore.RED}[Target {target_id}/{total_targets}] ✗ Failed: {tgt} - {e}{Style.RESET_ALL}")
@@ -695,23 +733,23 @@ def run_interactive_mode(args):
 
     check_dependencies(sorted(all_ports), args)
 
-    # Process targets in batches of 5
-    BATCH_SIZE = 5
+    # Process targets in batches
     output_lock = Lock()
     results = {}  # Store results with original order
     total_targets = len(targets)
 
     # Calculate number of batches
-    num_batches = (total_targets + BATCH_SIZE - 1) // BATCH_SIZE
+    num_batches = (total_targets + IP_BATCH_SIZE - 1) // IP_BATCH_SIZE
 
     print(f"\n{Fore.CYAN}{'=' * 72}")
-    print(f"CONCURRENT BATCH PROCESSING - {num_batches} batch(es) of up to {BATCH_SIZE} IPs")
+    print(f"CONCURRENT BATCH PROCESSING - {num_batches} batch(es) of up to {IP_BATCH_SIZE} IPs")
+    print(f"  Each IP scans up to {MAX_CONCURRENT_PORTS} ports concurrently")
     print(f"{'=' * 72}{Style.RESET_ALL}\n")
 
     # Process targets in batches
     for batch_num in range(num_batches):
-        batch_start = batch_num * BATCH_SIZE
-        batch_end = min(batch_start + BATCH_SIZE, total_targets)
+        batch_start = batch_num * IP_BATCH_SIZE
+        batch_end = min(batch_start + IP_BATCH_SIZE, total_targets)
         batch_targets = targets[batch_start:batch_end]
         batch_size = len(batch_targets)
 
