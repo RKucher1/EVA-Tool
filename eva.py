@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.4
-#  Date   :  2025-11-28
+#  Version:  8.5
+#  Date   :  2025-12-01
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.4 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.5 — Sequential, banner-style network scanner with live output.
 
 Highlights
 ----------
 • Human-friendly errors and guidance (no log files, no stack traces by default).
 • Live, colorized streaming of command output with clear section headers.
-• Interactive mode (--interactive or -i): scan multiple IPs and ports concurrently with organized output.
+• Interactive mode (--interactive or -i): scan multiple IPs and ports in batches of 5, with concurrent processing and organized output.
 • Fast-path TLS: if the port number contains "443" anywhere (e.g., 443, 1443, 4433, 10443),
   run testssl immediately and skip nmap for speed.
 • Smarter TLS trigger in generic flow (uses THIS port's service line only; skips reverse-ssl, IKE).
@@ -529,6 +529,7 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
     Scan a single target and return the results as a string.
     Uses output capturing to prevent interleaved output from concurrent scans.
     Provides real-time progress updates via thread-safe printing.
+    Enhanced error handling for robust batch processing.
     """
     # Capture all output for this target
     import sys
@@ -538,14 +539,37 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
     host = strip_proto(target)
     try:
         tgt = host if is_ip(host) else resolve(host)
+        with output_lock:
+            logging.info(f"Target {target_id}/{total_targets}: Resolved '{host}' to {tgt}")
+    except socket.gaierror as e:
+        error_msg = f"\n{Fore.RED}[ERROR] DNS resolution failed for '{host}': {e}{Style.RESET_ALL}\n"
+        with output_lock:
+            logging.error(f"Target {target_id}: DNS resolution failed for '{host}': {e}")
+        return error_msg
     except Exception as e:
-        return f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n"
+        error_msg = f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n"
+        with output_lock:
+            logging.error(f"Target {target_id}: Resolution error for '{host}': {e}")
+        return error_msg
 
     # Expand ports
     try:
         port_list = expand(port_spec)
+        if not port_list:
+            error_msg = f"\n{Fore.RED}[ERROR] No valid ports in specification '{port_spec}' for {target}{Style.RESET_ALL}\n"
+            with output_lock:
+                logging.error(f"Target {target_id}: Empty port list from spec '{port_spec}'")
+            return error_msg
+    except ValueError as e:
+        error_msg = f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
+        with output_lock:
+            logging.error(f"Target {target_id}: Invalid port spec '{port_spec}': {e}")
+        return error_msg
     except Exception as e:
-        return f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
+        error_msg = f"\n{Fore.RED}[ERROR] Port expansion failed for {target}: {e}{Style.RESET_ALL}\n"
+        with output_lock:
+            logging.error(f"Target {target_id}: Port expansion error: {e}")
+        return error_msg
 
     # Thread-safe status update
     with output_lock:
@@ -563,6 +587,7 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
     # Redirect stdout temporarily
     old_stdout = sys.stdout
     captured_output = StringIO()
+    port_errors = []  # Track individual port errors
 
     try:
         sys.stdout = captured_output
@@ -578,33 +603,67 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
 
                 scan_port(sc, p)
                 time.sleep(PACE)
+            except KeyboardInterrupt:
+                sys.stdout = old_stdout
+                with output_lock:
+                    print(f"{Fore.RED}[Target {target_id}/{total_targets}] Interrupted by user{Style.RESET_ALL}")
+                raise  # Re-raise to propagate interrupt
             except Exception as e:
+                # Log port-specific error but continue scanning
+                error_detail = f"Port {p}: {type(e).__name__} - {e}"
+                port_errors.append(error_detail)
                 banner(Fore.RED, f"Port {p} — unexpected error")
-                err(f"Something went wrong while scanning port {p}: {e}")
+                err(f"Error scanning port {p}: {e}")
+                sys.stdout = old_stdout
+                with output_lock:
+                    logging.warning(f"Target {target_id}, Port {p}: {e}")
+                sys.stdout = captured_output
 
         # Restore stdout and get captured content
         sys.stdout = old_stdout
         output_parts.append(captured_output.getvalue())
 
+        # Add error summary if any ports failed
+        if port_errors:
+            output_parts.append(f"\n{Fore.YELLOW}{'=' * 72}")
+            output_parts.append(f"Port Scan Errors for {tgt}:")
+            output_parts.append(f"{'=' * 72}{Style.RESET_ALL}")
+            for err_detail in port_errors:
+                output_parts.append(f"{Fore.YELLOW}  • {err_detail}{Style.RESET_ALL}")
+            output_parts.append("")
+
         output_parts.append(f"\n{Fore.GREEN}{'=' * 72}")
         output_parts.append(f"COMPLETED: {tgt}")
+        if port_errors:
+            output_parts.append(f"  ({len(port_errors)} port(s) had errors)")
         output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
 
         # Final completion message
         with output_lock:
-            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed scan of {tgt}{Style.RESET_ALL}")
+            status = f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed scan of {tgt}"
+            if port_errors:
+                status += f" ({len(port_errors)} port errors)"
+            status += Style.RESET_ALL
+            print(status)
+            logging.info(f"Target {target_id} completed: {tgt} ({len(port_list)} ports, {len(port_errors)} errors)")
 
+    except KeyboardInterrupt:
+        sys.stdout = old_stdout
+        output_parts.append(f"\n{Fore.YELLOW}[INTERRUPTED] Scan interrupted for {tgt}{Style.RESET_ALL}\n")
+        raise  # Propagate interrupt
     except Exception as e:
         sys.stdout = old_stdout
         output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
         with output_lock:
             print(f"{Fore.RED}[Target {target_id}/{total_targets}] ✗ Failed: {tgt} - {e}{Style.RESET_ALL}")
+            logging.error(f"Target {target_id} fatal error: {tgt} - {e}", exc_info=args.debug)
 
     return "\n".join(output_parts)
 
 def run_interactive_mode(args):
     """
-    Run EVA in interactive mode: collect multiple targets, scan concurrently, display organized results.
+    Run EVA in interactive mode: collect multiple targets, scan concurrently in batches, display organized results.
+    Processes IPs in batches of 5 for optimal performance and resource management.
     """
     # Collect targets
     targets = collect_targets_interactive()
@@ -626,36 +685,75 @@ def run_interactive_mode(args):
     for _, port_spec in targets:
         try:
             all_ports.update(expand(port_spec))
-        except:
-            pass
+        except Exception as e:
+            warn(f"Error expanding port specification '{port_spec}': {e}")
+            continue
+
+    if not all_ports:
+        print(Fore.RED + "\nNo valid ports found in targets. Exiting." + Style.RESET_ALL)
+        sys.exit(1)
+
     check_dependencies(sorted(all_ports), args)
 
-    # Run scans concurrently
+    # Process targets in batches of 5
+    BATCH_SIZE = 5
     output_lock = Lock()
     results = {}  # Store results with original order
     total_targets = len(targets)
 
+    # Calculate number of batches
+    num_batches = (total_targets + BATCH_SIZE - 1) // BATCH_SIZE
+
     print(f"\n{Fore.CYAN}{'=' * 72}")
-    print(f"STARTING CONCURRENT SCANS - Live Progress")
+    print(f"CONCURRENT BATCH PROCESSING - {num_batches} batch(es) of up to {BATCH_SIZE} IPs")
     print(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-    with ThreadPoolExecutor(max_workers=total_targets) as executor:
-        # Submit all tasks with target IDs
-        future_to_idx = {
-            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets): idx
-            for idx, (tgt, ports) in enumerate(targets)
-        }
+    # Process targets in batches
+    for batch_num in range(num_batches):
+        batch_start = batch_num * BATCH_SIZE
+        batch_end = min(batch_start + BATCH_SIZE, total_targets)
+        batch_targets = targets[batch_start:batch_end]
+        batch_size = len(batch_targets)
 
-        # Collect results as they complete
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                result = future.result()
-                results[idx] = result
-            except Exception as e:
-                results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
-                with output_lock:
-                    print(f"{Fore.RED}✗ Target {idx + 1}/{total_targets} encountered an error{Style.RESET_ALL}")
+        with output_lock:
+            print(f"\n{Fore.MAGENTA}{'=' * 72}")
+            print(f"BATCH {batch_num + 1}/{num_batches}: Processing {batch_size} IP(s) concurrently")
+            print(f"  Targets {batch_start + 1}-{batch_end} of {total_targets}")
+            print(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+        # Run batch concurrently
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            # Submit tasks for this batch
+            future_to_idx = {
+                executor.submit(
+                    scan_target,
+                    tgt,
+                    ports,
+                    args,
+                    output_lock,
+                    batch_start + local_idx + 1,
+                    total_targets
+                ): batch_start + local_idx
+                for local_idx, (tgt, ports) in enumerate(batch_targets)
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result()
+                    results[idx] = result
+                except Exception as e:
+                    error_msg = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
+                    results[idx] = error_msg
+                    with output_lock:
+                        print(f"{Fore.RED}✗ Target {idx + 1}/{total_targets} encountered an error: {e}{Style.RESET_ALL}")
+                        logging.error(f"Target {idx + 1} scan failed: {e}", exc_info=args.debug)
+
+        # Batch completion message
+        with output_lock:
+            print(f"\n{Fore.GREEN}✓ BATCH {batch_num + 1}/{num_batches} COMPLETE{Style.RESET_ALL}")
+            print(f"  Completed targets {batch_start + 1}-{batch_end} of {total_targets}\n")
 
     # Display results in order
     print(f"\n\n{Fore.CYAN}{'=' * 72}")
