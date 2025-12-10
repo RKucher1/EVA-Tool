@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.5
+#  Version:  8.6
 #  Date   :  2025-12-10
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.5 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.6 — Sequential, banner-style network scanner with live output.
 
 Highlights
 ----------
 • Human-friendly errors and guidance (no log files, no stack traces by default).
 • Live, colorized streaming of command output with clear section headers.
 • Interactive mode (--interactive or -i): scan multiple IPs and ports concurrently with organized output.
+• Thread-safe output capture: concurrent scans collect output separately, displayed after completion.
 • Fast-path TLS: if the port number contains "443" anywhere (e.g., 443, 1443, 4433, 10443),
   run testssl immediately and skip nmap for speed.
 • Smarter TLS trigger in generic flow (uses THIS port's service line only; skips reverse-ssl, IKE).
@@ -40,6 +41,7 @@ import subprocess
 import sys
 import time
 import shutil
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 from http import HTTPStatus
@@ -72,6 +74,39 @@ def clear_lines(n: int):
     """Clear n lines above current cursor position."""
     for _ in range(n):
         print(CURSOR_UP + CLEAR_LINE, end="")
+
+
+# ───────── Thread-local output capture for concurrent scans
+_thread_local = threading.local()
+
+def is_capturing():
+    """Check if current thread is in output capture mode."""
+    return getattr(_thread_local, 'capturing', False)
+
+def get_capture_buffer():
+    """Get the capture buffer for current thread."""
+    return getattr(_thread_local, 'buffer', None)
+
+def start_capture():
+    """Start capturing output for current thread."""
+    _thread_local.capturing = True
+    _thread_local.buffer = []
+
+def stop_capture():
+    """Stop capturing and return captured output."""
+    _thread_local.capturing = False
+    buffer = getattr(_thread_local, 'buffer', [])
+    _thread_local.buffer = []
+    return "\n".join(buffer)
+
+def write_output(text, end="\n"):
+    """Write text to stdout or capture buffer depending on mode."""
+    if is_capturing():
+        buffer = get_capture_buffer()
+        if buffer is not None:
+            buffer.append(text + (end if end != "\n" else ""))
+    else:
+        print(text, end=end)
 
 
 class ProgressTracker:
@@ -201,21 +236,21 @@ def require_root():
 # ───────── console formatting helpers
 def banner(color, text: str):
     bar = color + "=" * 72 + Style.RESET_ALL
-    print("\n" + bar)
-    print(color + text + Style.RESET_ALL)
-    print(bar)
+    write_output("\n" + bar)
+    write_output(color + text + Style.RESET_ALL)
+    write_output(bar)
 
 def show_cmd(cmd):
-    print(Fore.LIGHTBLUE_EX + "      Command: " + " ".join(cmd) + Style.RESET_ALL)
+    write_output(Fore.LIGHTBLUE_EX + "      Command: " + " ".join(cmd) + Style.RESET_ALL)
 
 def ok(msg: str):
-    print("      " + Fore.GREEN + msg + Style.RESET_ALL)
+    write_output("      " + Fore.GREEN + msg + Style.RESET_ALL)
 
 def warn(msg: str):
-    print("      " + Fore.YELLOW + msg + Style.RESET_ALL)
+    write_output("      " + Fore.YELLOW + msg + Style.RESET_ALL)
 
 def err(msg: str):
-    print("      " + Fore.RED + msg + Style.RESET_ALL)
+    write_output("      " + Fore.RED + msg + Style.RESET_ALL)
 
 # ───────── dependency preflight
 def tool_path(name: str) -> str | None:
@@ -279,7 +314,7 @@ def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
         ) as p:
             for ln in p.stdout:
                 line = ln.rstrip("\n")
-                print("      " + line)
+                write_output("      " + line)
                 buf.append(line)
                 if timeout is not None and (time.time() - start) > timeout:
                     p.kill()
@@ -295,15 +330,15 @@ def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
                 if tail.strip():
                     warn("Last lines from the tool for context:")
                     for ln in tail.splitlines():
-                        print("         " + ln)
+                        write_output("         " + ln)
                 warn("Tip: Re-run with --debug to see more detail, or run the command manually.")
             return "\n".join(buf).lower()
     except FileNotFoundError:
         err(f"Cannot run '{cmd[0]}' because it was not found.")
-        print("         " + f"Install suggestion: sudo apt-get install {cmd[0]}")
+        write_output("         " + f"Install suggestion: sudo apt-get install {cmd[0]}")
     except PermissionError:
         err(f"Permission denied when executing '{cmd[0]}'.")
-        print("         " + "Tip: Ensure the file is executable (chmod +x) or run with sudo/root.")
+        write_output("         " + "Tip: Ensure the file is executable (chmod +x) or run with sudo/root.")
     except Exception as e:
         err(f"Unexpected problem while running the command: {e}")
         warn("Tip: Re-run with --debug for additional diagnostics.")
@@ -351,7 +386,7 @@ def webpage_visibility(sc: Scanner, port: int, proto: str):
 
     try:
         r = requests.get(url, timeout=(5, 10), verify=VERIFY_SSL)
-        print("      Main page ->", http_descr(r.status_code))
+        write_output("      Main page -> " + http_descr(r.status_code))
         if r.status_code == 200:
             sc.recommended_urls.append(("Main page", url))
             ok(f"[+] Main page reachable: {url}")
@@ -361,13 +396,13 @@ def webpage_visibility(sc: Scanner, port: int, proto: str):
 
     try:
         r = requests.get(robots_url, timeout=(5, 10), verify=VERIFY_SSL)
-        print("      robots.txt ->", http_descr(r.status_code))
+        write_output("      robots.txt -> " + http_descr(r.status_code))
         if r.status_code == 200 and r.text.strip():
             sc.recommended_urls.append(("robots.txt", robots_url))
             ok(f"[+] robots.txt found: {robots_url}")
-            print("      " + Fore.MAGENTA + "robots.txt contents:" + Style.RESET_ALL)
+            write_output("      " + Fore.MAGENTA + "robots.txt contents:" + Style.RESET_ALL)
             for ln in r.text.splitlines():
-                print("         " + ln)
+                write_output("         " + ln)
     except requests.RequestException as e:
         warn(f"Could not fetch robots.txt at {robots_url}: {e}")
 
@@ -379,14 +414,14 @@ def display_webpage_summary(sc: Scanner):
     if not sc.recommended_urls:
         return
 
-    print()
+    write_output("")
     banner(Fore.MAGENTA, f"WEBPAGES TO REVIEW — {sc.tgt}")
-    print(f"      {Fore.CYAN}The following pages are reachable and may be worth reviewing:{Style.RESET_ALL}")
-    print()
+    write_output(f"      {Fore.CYAN}The following pages are reachable and may be worth reviewing:{Style.RESET_ALL}")
+    write_output("")
     for idx, (page_type, url) in enumerate(sc.recommended_urls, 1):
-        print(f"      {Fore.WHITE}{idx}. [{page_type}]{Style.RESET_ALL} {Fore.GREEN}{url}{Style.RESET_ALL}")
-    print()
-    print(f"      {Fore.YELLOW}Tip: Copy URLs above or run with --no-firefox to skip this check entirely{Style.RESET_ALL}")
+        write_output(f"      {Fore.WHITE}{idx}. [{page_type}]{Style.RESET_ALL} {Fore.GREEN}{url}{Style.RESET_ALL}")
+    write_output("")
+    write_output(f"      {Fore.YELLOW}Tip: Copy URLs above or run with --no-firefox to skip this check entirely{Style.RESET_ALL}")
 
 # ───────── per-port handlers
 def h_ssh(sc: Scanner, port: int):
@@ -616,13 +651,9 @@ def collect_targets_interactive():
 def scan_target(target: str, port_spec: str, args, progress_tracker: ProgressTracker, target_id: int, total_targets: int):
     """
     Scan a single target and return the results as a string.
-    Uses output capturing to prevent interleaved output from concurrent scans.
+    Uses thread-local output capturing to prevent interleaved output from concurrent scans.
     Provides real-time progress updates via the ProgressTracker.
     """
-    # Capture all output for this target
-    import sys
-    from io import StringIO
-
     # Resolve target
     host = strip_proto(target)
     try:
@@ -644,26 +675,21 @@ def scan_target(target: str, port_spec: str, args, progress_tracker: ProgressTra
     # Build the scanner
     sc = Scanner(tgt, args)
 
-    # Capture output
+    # Output header
     output_parts = []
     output_parts.append(f"\n{Fore.CYAN}{'=' * 72}")
     output_parts.append(f"Target: {tgt}   Ports: {port_spec}")
     output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-    # Redirect stdout temporarily
-    old_stdout = sys.stdout
-    captured_output = StringIO()
-
     try:
-        sys.stdout = captured_output
+        # Start thread-local output capture
+        start_capture()
 
         # Scan each port with progress updates
         for idx, p in enumerate(port_list, 1):
             try:
-                # Progress update via tracker
-                sys.stdout = old_stdout
+                # Progress update via tracker (uses real stdout, not affected by capture)
                 progress_tracker.update(target_id, tgt, p, idx, len(port_list), "scanning")
-                sys.stdout = captured_output
 
                 scan_port(sc, p)
                 time.sleep(PACE)
@@ -674,9 +700,9 @@ def scan_target(target: str, port_spec: str, args, progress_tracker: ProgressTra
         # Display webpage summary (still capturing output)
         display_webpage_summary(sc)
 
-        # Restore stdout and get captured content
-        sys.stdout = old_stdout
-        output_parts.append(captured_output.getvalue())
+        # Stop capture and get captured content
+        captured_content = stop_capture()
+        output_parts.append(captured_content)
 
         output_parts.append(f"\n{Fore.GREEN}{'=' * 72}")
         output_parts.append(f"COMPLETED: {tgt}")
@@ -686,7 +712,8 @@ def scan_target(target: str, port_spec: str, args, progress_tracker: ProgressTra
         progress_tracker.update(target_id, tgt, status="complete")
 
     except Exception as e:
-        sys.stdout = old_stdout
+        # Make sure capture is stopped on error
+        stop_capture()
         output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
         progress_tracker.update(target_id, tgt, status="error")
 
