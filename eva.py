@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.6
+#  Version:  8.7
 #  Date   :  2025-12-10
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.6 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.7 — Sequential, banner-style network scanner with live output.
 
 Highlights
 ----------
@@ -19,7 +19,9 @@ Highlights
   also printed inline when found.
 • SNMP: still runs even if netcat reports closed; nmap SNMP + snmp-check (public/private).
 • IKE: only port 500 runs the ike-scan trilogy; port 4500 stays generic.
-• testssl has a 10 minute (600s) timeout to prevent hanging on unresponsive hosts.
+• testssl has a 10 minute (600s) timeout with watchdog timer that kills hung processes
+  even when they produce no output (robust timeout enforcement).
+• Animated spinners with elapsed time for each IP being scanned in interactive mode.
 
 Requirements (Kali/Debian)
 --------------------------
@@ -111,13 +113,39 @@ class ProgressTracker:
     """
     Thread-safe progress tracker that displays scan progress in-place.
     Uses ANSI escape codes to update a fixed area of the terminal.
+    Includes animated spinners for active scans.
     """
+    # Braille spinner frames for smooth animation
+    SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
     def __init__(self, total_targets: int, lock: Lock):
         self.total_targets = total_targets
         self.lock = lock
-        self.progress = {}  # target_id -> (ip, current_port, port_idx, total_ports, status)
+        self.progress = {}  # target_id -> (ip, current_port, port_idx, total_ports, status, start_time)
         self.lines_printed = 0
         self._initialized = False
+        self._spinner_idx = 0
+        self._spinner_thread = None
+        self._stop_spinner = threading.Event()
+        self._start_spinner_thread()
+
+    def _start_spinner_thread(self):
+        """Start background thread to animate spinners."""
+        def spinner_loop():
+            while not self._stop_spinner.is_set():
+                time.sleep(0.1)  # Update every 100ms
+                with self.lock:
+                    # Only refresh if we have active scans
+                    has_active = any(
+                        status == "scanning"
+                        for _, _, _, _, status, _ in self.progress.values()
+                    )
+                    if has_active and self.lines_printed > 0:
+                        self._spinner_idx = (self._spinner_idx + 1) % len(self.SPINNER_FRAMES)
+                        self._refresh_display()
+
+        self._spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
+        self._spinner_thread.start()
 
     def _clear_progress_area(self):
         """Clear the progress display area."""
@@ -127,19 +155,30 @@ class ProgressTracker:
                 sys.stdout.write(CURSOR_UP + CLEAR_LINE)
             sys.stdout.flush()
 
+    def _format_elapsed(self, seconds: float) -> str:
+        """Format elapsed time as mm:ss."""
+        mins, secs = divmod(int(seconds), 60)
+        return f"{mins}:{secs:02d}"
+
     def _render_progress(self):
-        """Render the current progress state."""
+        """Render the current progress state with spinners."""
         lines = []
+        spinner = self.SPINNER_FRAMES[self._spinner_idx]
         lines.append(f"{Fore.CYAN}┌─ Scanning Progress:{Style.RESET_ALL}")
 
+        current_time = time.time()
         for target_id in sorted(self.progress.keys()):
-            ip, port, port_idx, total_ports, status = self.progress[target_id]
+            ip, port, port_idx, total_ports, status, start_time = self.progress[target_id]
+            elapsed = current_time - start_time if start_time else 0
+
             if status == "complete":
                 line = f"{Fore.GREEN}│ [{target_id}/{self.total_targets}] {ip} → Complete ✓{Style.RESET_ALL}"
             elif status == "error":
                 line = f"{Fore.RED}│ [{target_id}/{self.total_targets}] {ip} → Error ✗{Style.RESET_ALL}"
             else:
-                line = f"{Fore.YELLOW}│ [{target_id}/{self.total_targets}] {ip}:{port} → Scanning ({port_idx}/{total_ports}){Style.RESET_ALL}"
+                # Active scan with spinner and elapsed time
+                elapsed_str = self._format_elapsed(elapsed)
+                line = f"{Fore.YELLOW}│ {spinner} [{target_id}/{self.total_targets}] {ip}:{port} → Scanning ({port_idx}/{total_ports}) [{elapsed_str}]{Style.RESET_ALL}"
             lines.append(line)
 
         lines.append(f"{Fore.CYAN}└{'─' * 50}{Style.RESET_ALL}")
@@ -148,7 +187,14 @@ class ProgressTracker:
     def update(self, target_id: int, ip: str, port: int = 0, port_idx: int = 0, total_ports: int = 0, status: str = "scanning"):
         """Update progress for a target (thread-safe)."""
         with self.lock:
-            self.progress[target_id] = (ip, port, port_idx, total_ports, status)
+            # Preserve start_time if already tracking, else set new start time
+            existing = self.progress.get(target_id)
+            if existing and existing[4] == "scanning":
+                start_time = existing[5]  # Keep existing start time
+            else:
+                start_time = time.time() if status == "scanning" else 0
+
+            self.progress[target_id] = (ip, port, port_idx, total_ports, status, start_time)
             self._refresh_display()
 
     def _refresh_display(self):
@@ -168,6 +214,7 @@ class ProgressTracker:
 
     def finish(self):
         """Clear progress display when all scans complete."""
+        self._stop_spinner.set()
         with self.lock:
             self._clear_progress_area()
             self.lines_printed = 0
@@ -297,11 +344,26 @@ def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
     Returns the complete (lowercased) output for programmatic checks.
 
     timeout=None -> run without any time limit.
+
+    Uses a watchdog timer to enforce timeouts even when the process
+    hangs without producing output (fixes testssl hanging issues).
     """
     banner(Fore.YELLOW, f"▶ {desc} (live)")
     show_cmd(cmd)
     buf = []
-    start = time.time()
+    timed_out = threading.Event()
+
+    def watchdog(proc, timeout_secs):
+        """Kill process if timeout elapses."""
+        if timed_out.wait(timeout_secs):
+            return  # Event was set, meaning we finished normally
+        # Timeout elapsed - kill the process
+        try:
+            proc.kill()
+            timed_out.set()
+        except:
+            pass
+
     try:
         with subprocess.Popen(
             cmd,
@@ -310,17 +372,30 @@ def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
             text=True,
             bufsize=1,
         ) as p:
+            # Start watchdog timer if timeout is set
+            timer_thread = None
+            if timeout is not None:
+                timer_thread = threading.Thread(target=watchdog, args=(p, timeout), daemon=True)
+                timer_thread.start()
+
+            # Read output line by line
             for ln in p.stdout:
+                if timed_out.is_set():
+                    break
                 line = ln.rstrip("\n")
                 write_output("      " + line)
                 buf.append(line)
-                if timeout is not None and (time.time() - start) > timeout:
-                    p.kill()
-                    err("[TIMEOUT] The command took too long and was stopped.")
-                    warn("Tip: Re-run with --debug or run the command manually to investigate.")
-                    break
+
             p.wait()
-            if p.returncode == 0:
+
+            # Signal watchdog to stop (if still running)
+            timed_out.set()
+
+            if p.returncode == -9 or (timer_thread and timed_out.is_set() and p.returncode != 0):
+                # Process was killed by watchdog
+                err("[TIMEOUT] The command took too long and was stopped.")
+                warn("Tip: Re-run with --debug or run the command manually to investigate.")
+            elif p.returncode == 0:
                 ok("SUCCESS ✓")
             else:
                 err(f"FAILED (exit code {p.returncode}).")
