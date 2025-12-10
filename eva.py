@@ -20,7 +20,7 @@ Highlights
   also printed inline when found.
 • SNMP: still runs even if netcat reports closed; nmap SNMP + snmp-check (public/private).
 • IKE: only port 500 runs the ike-scan trilogy; port 4500 stays generic.
-• testssl has NO wrapper timeout and will run to completion.
+• testssl has a 10 minute (600s) timeout to prevent hanging on unresponsive hosts.
 
 Requirements (Kali/Debian)
 --------------------------
@@ -140,7 +140,8 @@ class ProgressTracker:
             self.lines_printed = 0
 
 # ───────── constants / tuning
-CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts (NOT used for testssl)
+CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts
+TESTSSL_TOUT = 600                      # 10 minute timeout for testssl
 PACE = 0.3                              # pause between ports to avoid FW throttling
 VERIFY_SSL = False
 
@@ -311,13 +312,13 @@ def run_live(cmd, desc, timeout=CMD_TOUT) -> str:
 def run_testssl(args: list[str], desc: str) -> str:
     """
     Wrapper around testssl so the scan never crashes nor prints noisy errors
-    if the binary is not present. **No timeout enforced**.
+    if the binary is not present. Uses 10 minute timeout.
     """
     if TESTSSL_BIN is None:
         warn("Skipping testssl: binary not found on this system.")
         return ""
     full_cmd = [TESTSSL_BIN, *args]
-    return run_live(full_cmd, desc, timeout=None)  # no timeout
+    return run_live(full_cmd, desc, timeout=TESTSSL_TOUT)
 
 # ───────── helpers (net/web)
 def nc_probe(host, port):
