@@ -15,15 +15,16 @@ Highlights
 • Fast-path TLS: if the port number contains "443" anywhere (e.g., 443, 1443, 4433, 10443),
   run testssl immediately and skip nmap for speed.
 • Smarter TLS trigger in generic flow (uses THIS port's service line only; skips reverse-ssl, IKE).
-• Web visibility helper: if site is reachable, auto-open in Firefox (unless --no-firefox)
-  and print robots.txt contents, opening it too if present.
+• Web visibility helper: if site is reachable, displays URLs in a summary section
+  at the end of the scan (no auto-opening Firefox windows). robots.txt contents are
+  also printed inline when found.
 • SNMP: still runs even if netcat reports closed; nmap SNMP + snmp-check (public/private).
 • IKE: only port 500 runs the ike-scan trilogy; port 4500 stays generic.
 • testssl has NO wrapper timeout and will run to completion.
 
 Requirements (Kali/Debian)
 --------------------------
-sudo apt-get install nmap netcat-traditional curl dnsutils snmpcheck ssh-audit ike-scan firefox-esr
+sudo apt-get install nmap netcat-traditional curl dnsutils snmpcheck ssh-audit ike-scan
 pip install colorama tqdm requests
 (Optional) testssl.sh: place at /root/tools/testssl.sh/testssl.sh or install 'testssl' CLI.
 """
@@ -250,8 +251,6 @@ def check_dependencies(ports: list[int], args):
         warn("Optional tool 'ssh-audit' not found. Install: pip install ssh-audit")
     if need_ike and not tool_path("ike-scan"):
         warn("Optional tool 'ike-scan' not found. Install: sudo apt-get install ike-scan")
-    if not args.no_firefox and not tool_path("firefox"):
-        warn("Firefox not found; pages will not be auto-opened. Install: sudo apt-get install firefox-esr")
     if TESTSSL_BIN is None:
         warn("testssl not found; TLS deep-dive will be skipped gracefully.")
     else:
@@ -329,21 +328,6 @@ def curl_hdr(proto, host, port):
     return run_live(["curl", "-I", "-k", f"{proto}://{host}:{port}"],
                     f"curl -I {proto}://{host}:{port}", CURL_TOUT)
 
-def open_firefox(url: str, suppress: bool):
-    if suppress:
-        return
-    try:
-        subprocess.Popen(
-            ["firefox", "-new-window", url],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        ok(f"[+] Opened Firefox: {url}")
-    except FileNotFoundError:
-        warn("Firefox not found; cannot open the page automatically.")
-    except Exception as e:
-        warn(f"Could not open Firefox for {url}: {e}")
-
 def http_descr(code: int) -> str:
     return f"{HTTPStatus(code).phrase} ({code})"
 
@@ -352,12 +336,14 @@ class Scanner:
     def __init__(self, target: str, args):
         self.tgt = target
         self.a = args
+        self.recommended_urls = []  # URLs to visit (displayed in summary instead of auto-opening)
 
 # ───────── WEB helpers
 def webpage_visibility(sc: Scanner, port: int, proto: str):
     """
-    If website appears reachable, open Firefox on / and /robots.txt
-    and print robots.txt contents.
+    If website appears reachable, collect URLs for summary display
+    and print robots.txt contents. URLs are displayed in the final summary
+    instead of auto-opening Firefox windows.
     """
     url = f"{proto}://{sc.tgt}:{port}"
     robots_url = f"{url}/robots.txt"
@@ -366,7 +352,8 @@ def webpage_visibility(sc: Scanner, port: int, proto: str):
         r = requests.get(url, timeout=(5, 10), verify=VERIFY_SSL)
         print("      Main page ->", http_descr(r.status_code))
         if r.status_code == 200:
-            open_firefox(url, sc.a.no_firefox)
+            sc.recommended_urls.append(("Main page", url))
+            ok(f"[+] Main page reachable: {url}")
     except requests.RequestException as e:
         warn(f"Could not reach {url}: {e}")
         return
@@ -375,12 +362,30 @@ def webpage_visibility(sc: Scanner, port: int, proto: str):
         r = requests.get(robots_url, timeout=(5, 10), verify=VERIFY_SSL)
         print("      robots.txt ->", http_descr(r.status_code))
         if r.status_code == 200 and r.text.strip():
-            open_firefox(robots_url, sc.a.no_firefox)
+            sc.recommended_urls.append(("robots.txt", robots_url))
+            ok(f"[+] robots.txt found: {robots_url}")
             print("      " + Fore.MAGENTA + "robots.txt contents:" + Style.RESET_ALL)
             for ln in r.text.splitlines():
                 print("         " + ln)
     except requests.RequestException as e:
         warn(f"Could not fetch robots.txt at {robots_url}: {e}")
+
+def display_webpage_summary(sc: Scanner):
+    """
+    Display a summary of all recommended URLs to visit.
+    This replaces auto-opening Firefox windows.
+    """
+    if not sc.recommended_urls:
+        return
+
+    print()
+    banner(Fore.MAGENTA, f"WEBPAGES TO REVIEW — {sc.tgt}")
+    print(f"      {Fore.CYAN}The following pages are reachable and may be worth reviewing:{Style.RESET_ALL}")
+    print()
+    for idx, (page_type, url) in enumerate(sc.recommended_urls, 1):
+        print(f"      {Fore.WHITE}{idx}. [{page_type}]{Style.RESET_ALL} {Fore.GREEN}{url}{Style.RESET_ALL}")
+    print()
+    print(f"      {Fore.YELLOW}Tip: Copy URLs above or run with --no-firefox to skip this check entirely{Style.RESET_ALL}")
 
 # ───────── per-port handlers
 def h_ssh(sc: Scanner, port: int):
@@ -535,8 +540,8 @@ def cli():
     ap.add_argument("--interactive", "-i", action="store_true",
                     help="Interactive mode: input multiple IPs and ports, scan concurrently")
     ap.add_argument("--no-ssl", action="store_true", help="Skip all TLS/testssl scans")
-    ap.add_argument("--no-web", action="store_true", help="Skip curl/HTTP and Firefox actions")
-    ap.add_argument("--no-firefox", action="store_true", help="Do not launch Firefox even if reachable")
+    ap.add_argument("--no-web", action="store_true", help="Skip curl/HTTP and webpage visibility checks")
+    ap.add_argument("--no-firefox", action="store_true", help="Skip webpage visibility checks (legacy flag, same as --no-web for URLs)")
     ap.add_argument("--debug", action="store_true", help="Verbose internal logging to stdout")
     args = ap.parse_args()
 
@@ -665,6 +670,9 @@ def scan_target(target: str, port_spec: str, args, progress_tracker: ProgressTra
                 banner(Fore.RED, f"Port {p} — unexpected error")
                 err(f"Something went wrong while scanning port {p}: {e}")
 
+        # Display webpage summary (still capturing output)
+        display_webpage_summary(sc)
+
         # Restore stdout and get captured content
         sys.stdout = old_stdout
         output_parts.append(captured_output.getvalue())
@@ -790,6 +798,9 @@ def main():
             err(f"Something went wrong while scanning port {p}: {e}")
             print("         " + "Tip: Re-run with --debug for more details, or try scanning this port manually.")
         time.sleep(PACE)
+
+    # Display webpage summary instead of auto-opening Firefox
+    display_webpage_summary(sc)
 
     banner(Fore.GREEN, "SCAN COMPLETE")
 
