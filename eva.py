@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.5
+#  Version:  8.6
 #  Date   :  2025-12-10
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.5 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.6 — Sequential, banner-style network scanner with live output.
 
 Highlights
 ----------
 • Human-friendly errors and guidance (no log files, no stack traces by default).
 • Live, colorized streaming of command output with clear section headers.
-• Interactive mode (--interactive or -i): scan multiple IPs and ports concurrently with organized output.
+• Interactive mode (--interactive or -i): scan multiple IPs and ports with flexible processing.
+• Processing mode selection: choose between batch mode (5 IPs at a time) or all-at-once mode
+  (all IPs simultaneously on separate threads).
+• Final summary: displays all scanned targets and their ports with success/failure status.
 • Fast-path TLS: if the port number contains "443" anywhere (e.g., 443, 1443, 4433, 10443),
   run testssl immediately and skip nmap for speed.
 • Smarter TLS trigger in generic flow (uses THIS port's service line only; skips reverse-ssl, IKE).
@@ -692,9 +695,92 @@ def scan_target(target: str, port_spec: str, args, progress_tracker: ProgressTra
 
     return "\n".join(output_parts)
 
+def ask_processing_mode():
+    """
+    Ask user whether to run scans in batches or all at once.
+    Returns: 'batch' or 'all'
+    """
+    print(f"\n{Fore.CYAN}{'=' * 72}")
+    print("SELECT PROCESSING MODE")
+    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+    print(f"  {Fore.YELLOW}[b]{Style.RESET_ALL} Batch mode — Run 5 IPs at a time (safer for large scans)")
+    print(f"  {Fore.YELLOW}[a]{Style.RESET_ALL} All at once — Run all IPs simultaneously (faster but more resource intensive)")
+    print()
+
+    while True:
+        choice = input(f"  {Fore.CYAN}Enter choice [b/a]: {Style.RESET_ALL}").strip().lower()
+        if choice in ('b', 'batch'):
+            return 'batch'
+        elif choice in ('a', 'all'):
+            return 'all'
+        else:
+            print(Fore.RED + "  Invalid choice. Please enter 'b' for batch or 'a' for all at once." + Style.RESET_ALL)
+
+
+def display_final_summary(targets, results):
+    """
+    Display a final summary of all scanned IPs and their ports.
+    """
+    print(f"\n{Fore.CYAN}{'=' * 72}")
+    print("FINAL SUMMARY — All Targets and Ports")
+    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+    print(f"  {Fore.WHITE}{'Target':<30} {'Ports':<40}{Style.RESET_ALL}")
+    print(f"  {'-' * 30} {'-' * 40}")
+
+    for idx, (tgt, port_spec) in enumerate(targets):
+        # Resolve target for display
+        host = strip_proto(tgt)
+        try:
+            resolved = host if is_ip(host) else resolve(host)
+            display_name = f"{host}" if host == resolved else f"{host} ({resolved})"
+        except:
+            display_name = host
+            resolved = host
+
+        # Expand ports for count
+        try:
+            port_list = expand(port_spec)
+            port_count = len(port_list)
+            # Show first few ports and count
+            if port_count <= 5:
+                ports_display = port_spec
+            else:
+                first_ports = ", ".join(str(p) for p in port_list[:3])
+                ports_display = f"{first_ports}... ({port_count} total)"
+        except:
+            ports_display = port_spec
+
+        # Determine status from results
+        result = results.get(idx, "")
+        if "COMPLETED" in result:
+            status = f"{Fore.GREEN}✓{Style.RESET_ALL}"
+        elif "ERROR" in result:
+            status = f"{Fore.RED}✗{Style.RESET_ALL}"
+        else:
+            status = f"{Fore.YELLOW}?{Style.RESET_ALL}"
+
+        print(f"  {status} {display_name:<28} {ports_display:<40}")
+
+    print()
+    print(f"  {Fore.CYAN}Total targets scanned: {len(targets)}{Style.RESET_ALL}")
+
+    # Count successes and failures
+    successes = sum(1 for r in results.values() if "COMPLETED" in r)
+    failures = sum(1 for r in results.values() if "ERROR" in r)
+
+    if successes > 0:
+        print(f"  {Fore.GREEN}Successful: {successes}{Style.RESET_ALL}")
+    if failures > 0:
+        print(f"  {Fore.RED}Failed: {failures}{Style.RESET_ALL}")
+
+    print()
+
+
 def run_interactive_mode(args):
     """
     Run EVA in interactive mode: collect multiple targets, scan concurrently, display organized results.
+    Supports batch mode (5 IPs at a time) or all-at-once mode.
     """
     # Collect targets
     targets = collect_targets_interactive()
@@ -705,11 +791,14 @@ def run_interactive_mode(args):
 
     # Show summary
     print(f"\n{Fore.CYAN}{'=' * 72}")
-    print(f"Starting concurrent scan of {len(targets)} target(s)")
+    print(f"Targets collected: {len(targets)}")
     print(f"{'=' * 72}{Style.RESET_ALL}\n")
 
     for idx, (tgt, ports) in enumerate(targets, 1):
         print(f"  {idx}. {tgt} → {ports}")
+
+    # Ask user for processing mode
+    processing_mode = ask_processing_mode()
 
     # Check dependencies for all ports
     all_ports = set()
@@ -720,37 +809,84 @@ def run_interactive_mode(args):
             pass
     check_dependencies(sorted(all_ports), args)
 
-    # Run scans concurrently
+    # Run scans based on selected mode
     output_lock = Lock()
     results = {}  # Store results with original order
     total_targets = len(targets)
 
-    print(f"\n{Fore.CYAN}{'=' * 72}")
-    print(f"STARTING CONCURRENT SCANS - Live Progress")
-    print(f"{'=' * 72}{Style.RESET_ALL}\n")
+    if processing_mode == 'batch':
+        # Batch mode: process 5 IPs at a time
+        BATCH_SIZE = 5
+        num_batches = (total_targets + BATCH_SIZE - 1) // BATCH_SIZE
 
-    # Create progress tracker for in-place updates
-    progress_tracker = ProgressTracker(total_targets, output_lock)
+        print(f"\n{Fore.CYAN}{'=' * 72}")
+        print(f"BATCH MODE — Processing {total_targets} targets in batches of {BATCH_SIZE}")
+        print(f"Total batches: {num_batches}")
+        print(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-    with ThreadPoolExecutor(max_workers=total_targets) as executor:
-        # Submit all tasks with target IDs
-        future_to_idx = {
-            executor.submit(scan_target, tgt, ports, args, progress_tracker, idx + 1, total_targets): idx
-            for idx, (tgt, ports) in enumerate(targets)
-        }
+        for batch_num in range(num_batches):
+            start_idx = batch_num * BATCH_SIZE
+            end_idx = min(start_idx + BATCH_SIZE, total_targets)
+            batch_targets = targets[start_idx:end_idx]
+            batch_size = len(batch_targets)
 
-        # Collect results as they complete
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                result = future.result()
-                results[idx] = result
-            except Exception as e:
-                results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
-                progress_tracker.update(idx + 1, f"Target #{idx + 1}", status="error")
+            print(f"\n{Fore.YELLOW}{'─' * 72}")
+            print(f"BATCH {batch_num + 1}/{num_batches} — Targets {start_idx + 1} to {end_idx}")
+            print(f"{'─' * 72}{Style.RESET_ALL}\n")
 
-    # Clear the progress display before showing results
-    progress_tracker.finish()
+            # Create progress tracker for this batch
+            progress_tracker = ProgressTracker(batch_size, output_lock)
+
+            with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                # Submit all tasks in this batch
+                future_to_idx = {
+                    executor.submit(scan_target, tgt, ports, args, progress_tracker, local_idx + 1, batch_size): global_idx
+                    for local_idx, (global_idx, (tgt, ports)) in enumerate(
+                        (start_idx + i, batch_targets[i]) for i in range(batch_size)
+                    )
+                }
+
+                # Collect results as they complete
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        result = future.result()
+                        results[idx] = result
+                    except Exception as e:
+                        results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
+
+            # Clear progress display after batch
+            progress_tracker.finish()
+
+            print(f"\n{Fore.GREEN}Batch {batch_num + 1} complete.{Style.RESET_ALL}")
+
+    else:
+        # All at once mode: run all IPs simultaneously
+        print(f"\n{Fore.CYAN}{'=' * 72}")
+        print(f"ALL AT ONCE MODE — Running {total_targets} targets simultaneously")
+        print(f"{'=' * 72}{Style.RESET_ALL}\n")
+
+        # Create progress tracker for in-place updates
+        progress_tracker = ProgressTracker(total_targets, output_lock)
+
+        with ThreadPoolExecutor(max_workers=total_targets) as executor:
+            # Submit all tasks with target IDs
+            future_to_idx = {
+                executor.submit(scan_target, tgt, ports, args, progress_tracker, idx + 1, total_targets): idx
+                for idx, (tgt, ports) in enumerate(targets)
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result()
+                    results[idx] = result
+                except Exception as e:
+                    results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
+
+        # Clear the progress display before showing results
+        progress_tracker.finish()
 
     # Display results in order
     print(f"\n\n{Fore.CYAN}{'=' * 72}")
@@ -759,6 +895,9 @@ def run_interactive_mode(args):
 
     for idx in sorted(results.keys()):
         print(results[idx])
+
+    # Display final summary of all IPs and ports
+    display_final_summary(targets, results)
 
     banner(Fore.GREEN, "ALL SCANS COMPLETE")
 
