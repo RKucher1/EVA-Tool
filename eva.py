@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 #  Author :  Ryan Kucher
-#  Version:  8.4
-#  Date   :  2025-11-28
+#  Version:  8.5
+#  Date   :  2025-12-10
 # ─────────────────────────────────────────────────────────────
 """
-EVA Scanner v8.4 — Sequential, banner-style network scanner with live output.
+EVA Scanner v8.5 — Sequential, banner-style network scanner with live output.
 
 Highlights
 ----------
@@ -54,6 +54,89 @@ from tqdm import tqdm
 # ───────── init
 init(autoreset=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ───────── ANSI escape codes for terminal control
+CURSOR_UP = "\033[A"
+CURSOR_DOWN = "\033[B"
+CLEAR_LINE = "\033[2K"
+CURSOR_START = "\r"
+HIDE_CURSOR = "\033[?25l"
+SHOW_CURSOR = "\033[?25h"
+
+def move_cursor_up(n: int) -> str:
+    """Return ANSI escape code to move cursor up n lines."""
+    return f"\033[{n}A" if n > 0 else ""
+
+def clear_lines(n: int):
+    """Clear n lines above current cursor position."""
+    for _ in range(n):
+        print(CURSOR_UP + CLEAR_LINE, end="")
+
+
+class ProgressTracker:
+    """
+    Thread-safe progress tracker that displays scan progress in-place.
+    Uses ANSI escape codes to update a fixed area of the terminal.
+    """
+    def __init__(self, total_targets: int, lock: Lock):
+        self.total_targets = total_targets
+        self.lock = lock
+        self.progress = {}  # target_id -> (ip, current_port, port_idx, total_ports, status)
+        self.lines_printed = 0
+        self._initialized = False
+
+    def _clear_progress_area(self):
+        """Clear the progress display area."""
+        if self.lines_printed > 0:
+            # Move up and clear each line
+            for _ in range(self.lines_printed):
+                sys.stdout.write(CURSOR_UP + CLEAR_LINE)
+            sys.stdout.flush()
+
+    def _render_progress(self):
+        """Render the current progress state."""
+        lines = []
+        lines.append(f"{Fore.CYAN}┌─ Scanning Progress:{Style.RESET_ALL}")
+
+        for target_id in sorted(self.progress.keys()):
+            ip, port, port_idx, total_ports, status = self.progress[target_id]
+            if status == "complete":
+                line = f"{Fore.GREEN}│ [{target_id}/{self.total_targets}] {ip} → Complete ✓{Style.RESET_ALL}"
+            elif status == "error":
+                line = f"{Fore.RED}│ [{target_id}/{self.total_targets}] {ip} → Error ✗{Style.RESET_ALL}"
+            else:
+                line = f"{Fore.YELLOW}│ [{target_id}/{self.total_targets}] {ip}:{port} → Scanning ({port_idx}/{total_ports}){Style.RESET_ALL}"
+            lines.append(line)
+
+        lines.append(f"{Fore.CYAN}└{'─' * 50}{Style.RESET_ALL}")
+        return lines
+
+    def update(self, target_id: int, ip: str, port: int = 0, port_idx: int = 0, total_ports: int = 0, status: str = "scanning"):
+        """Update progress for a target (thread-safe)."""
+        with self.lock:
+            self.progress[target_id] = (ip, port, port_idx, total_ports, status)
+            self._refresh_display()
+
+    def _refresh_display(self):
+        """Refresh the progress display in-place."""
+        # Clear previous output
+        self._clear_progress_area()
+
+        # Render new progress
+        lines = self._render_progress()
+
+        # Print new progress
+        for line in lines:
+            print(line)
+
+        self.lines_printed = len(lines)
+        sys.stdout.flush()
+
+    def finish(self):
+        """Clear progress display when all scans complete."""
+        with self.lock:
+            self._clear_progress_area()
+            self.lines_printed = 0
 
 # ───────── constants / tuning
 CMD_TOUT, CURL_TOUT = 180, 15          # generic timeouts (NOT used for testssl)
@@ -524,11 +607,11 @@ def collect_targets_interactive():
 
     return targets
 
-def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id: int, total_targets: int):
+def scan_target(target: str, port_spec: str, args, progress_tracker: ProgressTracker, target_id: int, total_targets: int):
     """
     Scan a single target and return the results as a string.
     Uses output capturing to prevent interleaved output from concurrent scans.
-    Provides real-time progress updates via thread-safe printing.
+    Provides real-time progress updates via the ProgressTracker.
     """
     # Capture all output for this target
     import sys
@@ -539,17 +622,18 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
     try:
         tgt = host if is_ip(host) else resolve(host)
     except Exception as e:
+        progress_tracker.update(target_id, host, status="error")
         return f"\n{Fore.RED}[ERROR] Could not resolve '{host}': {e}{Style.RESET_ALL}\n"
 
     # Expand ports
     try:
         port_list = expand(port_spec)
     except Exception as e:
+        progress_tracker.update(target_id, tgt, status="error")
         return f"\n{Fore.RED}[ERROR] Invalid port specification for {target}: {e}{Style.RESET_ALL}\n"
 
-    # Thread-safe status update
-    with output_lock:
-        print(f"{Fore.CYAN}[Target {target_id}/{total_targets}] {Fore.WHITE}Starting scan of {tgt} ({len(port_list)} ports){Style.RESET_ALL}")
+    # Initial progress update
+    progress_tracker.update(target_id, tgt, port_list[0] if port_list else 0, 1, len(port_list), "scanning")
 
     # Build the scanner
     sc = Scanner(tgt, args)
@@ -570,10 +654,9 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
         # Scan each port with progress updates
         for idx, p in enumerate(port_list, 1):
             try:
-                # Progress update (thread-safe)
+                # Progress update via tracker
                 sys.stdout = old_stdout
-                with output_lock:
-                    print(f"{Fore.YELLOW}[Target {target_id}/{total_targets}] {Fore.WHITE}{tgt} → Scanning port {p} ({idx}/{len(port_list)}){Style.RESET_ALL}")
+                progress_tracker.update(target_id, tgt, p, idx, len(port_list), "scanning")
                 sys.stdout = captured_output
 
                 scan_port(sc, p)
@@ -590,15 +673,13 @@ def scan_target(target: str, port_spec: str, args, output_lock: Lock, target_id:
         output_parts.append(f"COMPLETED: {tgt}")
         output_parts.append(f"{'=' * 72}{Style.RESET_ALL}\n")
 
-        # Final completion message
-        with output_lock:
-            print(f"{Fore.GREEN}[Target {target_id}/{total_targets}] ✓ Completed scan of {tgt}{Style.RESET_ALL}")
+        # Mark as complete
+        progress_tracker.update(target_id, tgt, status="complete")
 
     except Exception as e:
         sys.stdout = old_stdout
         output_parts.append(f"\n{Fore.RED}[FATAL ERROR] Scan failed for {tgt}: {e}{Style.RESET_ALL}\n")
-        with output_lock:
-            print(f"{Fore.RED}[Target {target_id}/{total_targets}] ✗ Failed: {tgt} - {e}{Style.RESET_ALL}")
+        progress_tracker.update(target_id, tgt, status="error")
 
     return "\n".join(output_parts)
 
@@ -639,10 +720,13 @@ def run_interactive_mode(args):
     print(f"STARTING CONCURRENT SCANS - Live Progress")
     print(f"{'=' * 72}{Style.RESET_ALL}\n")
 
+    # Create progress tracker for in-place updates
+    progress_tracker = ProgressTracker(total_targets, output_lock)
+
     with ThreadPoolExecutor(max_workers=total_targets) as executor:
         # Submit all tasks with target IDs
         future_to_idx = {
-            executor.submit(scan_target, tgt, ports, args, output_lock, idx + 1, total_targets): idx
+            executor.submit(scan_target, tgt, ports, args, progress_tracker, idx + 1, total_targets): idx
             for idx, (tgt, ports) in enumerate(targets)
         }
 
@@ -654,8 +738,10 @@ def run_interactive_mode(args):
                 results[idx] = result
             except Exception as e:
                 results[idx] = f"\n{Fore.RED}[ERROR] Failed to scan target #{idx + 1}: {e}{Style.RESET_ALL}\n"
-                with output_lock:
-                    print(f"{Fore.RED}✗ Target {idx + 1}/{total_targets} encountered an error{Style.RESET_ALL}")
+                progress_tracker.update(idx + 1, f"Target #{idx + 1}", status="error")
+
+    # Clear the progress display before showing results
+    progress_tracker.finish()
 
     # Display results in order
     print(f"\n\n{Fore.CYAN}{'=' * 72}")
